@@ -1,15 +1,15 @@
 /**
- * notes — ferramentas de memoria de longa duracao.
+ * notes — long-term memory tools.
  *
- * Wrapper fino e tipado sobre o CLI global `notes` (alias `notes`), que vive
- * em ../memory/notes.py dentro deste repo. O wrapper NAO expoe nenhuma
- * operacao destrutiva: apenas add / search / list / doctor.
+ * Thin, typed wrapper over the global `notes` CLI, which lives in
+ * ../memory/notes.py inside this repo. The wrapper exposes NO destructive
+ * operation: only add / search / list / doctor.
  *
- * Seguranca:
- *  - execucao via spawn com argv (sem shell) => o conteudo da nota nunca e
- *    interpretado; aspas, `;`, `$(...)`, emoji e quebras de linha sao literais;
- *  - o guardrail de `#problem` recusa a gravacao sem Sintoma/Causa/Solucao,
- *    transformando a convencao da skill em algo que a ferramenta *garante*.
+ * Safety:
+ *  - execution via spawn with argv (no shell) => the note content is never
+ *    interpreted; quotes, `;`, `$(...)`, emoji and newlines stay literal;
+ *  - the `#problem` guardrail refuses to save without Symptom/Cause/Solution,
+ *    turning the skill's convention into something the tool *guarantees*.
  */
 
 import { tool } from "@opencode-ai/plugin";
@@ -29,7 +29,7 @@ const CATEGORIES = [
 
 type Run = { code: number; stdout: string; stderr: string };
 
-/** Resolve o binario: $NOTES_BIN > ~/.local/bin/notes > PATH. */
+/** Resolve the binary: $NOTES_BIN > ~/.local/bin/notes > PATH. */
 function nbCommand(): string {
   if (process.env.NOTES_BIN) return process.env.NOTES_BIN;
   const local = join(homedir(), ".local", "bin", "notes");
@@ -56,8 +56,8 @@ function runNb(args: string[], input?: string): Promise<Run> {
         stdout,
         stderr:
           stderr +
-          `\nnao foi possivel executar '${nbCommand()}': ${err.message}\n` +
-          "instale com ./install.sh no repo agent-toolbelt (cria o symlink em ~/.local/bin).",
+          `\ncould not run '${nbCommand()}': ${err.message}\n` +
+          "install it with ./install.sh in the agent-toolbelt repo (creates the symlink in ~/.local/bin).",
       }),
     );
     child.on("close", (code) => resolve({ code: code ?? -1, stdout, stderr }));
@@ -72,7 +72,7 @@ function render(run: Run): string {
   return [out, err, `(exit ${run.code})`].filter(Boolean).join("\n");
 }
 
-/** Normaliza para comparacao: sem acentos, minusculo. */
+/** Normalize for comparison: strip accents, lowercase. */
 function norm(text: string): string {
   return text
     .normalize("NFD")
@@ -80,41 +80,41 @@ function norm(text: string): string {
     .toLowerCase();
 }
 
-/** Secoes obrigatorias ausentes numa nota #problem. */
+/** Required sections missing from a #problem note. */
 function missingProblemSections(content: string): string[] {
   const text = norm(content);
   const required: Array<[string, string]> = [
-    ["Sintoma", "sintoma"],
-    ["Causa", "causa"],
-    ["Solução", "solucao"],
+    ["Symptom", "symptom"],
+    ["Cause", "cause"],
+    ["Solution", "solution"],
   ];
   return required.filter(([, needle]) => !text.includes(needle)).map(([label]) => label);
 }
 
 export const add = tool({
   description:
-    "Grava uma nota na memoria de longa duracao (notes). Use para decisoes, " +
-    "configuracoes nao obvias, snippets e — principalmente — problemas resolvidos. " +
-    "Regra: se category=problem, o content DEVE conter Sintoma, Causa e Solucao " +
-    "(a ferramenta recusa a gravacao se faltar algum). Antes de gravar, busque " +
-    "com notes_search para nao duplicar.",
+    "Save a note to long-term memory (notes). Use for decisions, non-obvious " +
+    "configuration, snippets and — above all — solved problems. " +
+    "Rule: if category=problem, content MUST contain Symptom, Cause and Solution " +
+    "(the tool refuses to save if one is missing). Before saving, search with " +
+    "notes_search to avoid duplicates. Write notes in English.",
   args: {
     category: tool.schema
       .enum(CATEGORIES)
-      .describe("Categoria da nota. Use 'problem' para problema resolvido."),
+      .describe("Note category. Use 'problem' for a solved problem."),
     title: tool.schema
       .string()
-      .describe("Titulo curto e especifico. Para 'problem', descreva o sintoma."),
+      .describe("Short, specific title. For 'problem', describe the symptom."),
     content: tool.schema
       .string()
       .describe(
-        "Conteudo escrito para quem nao viu a conversa. Se category=problem: " +
-          "Sintoma: ... | Causa: <raiz> | Solucao: <reproduzivel> | Arquivos: ...",
+        "Content written for someone who did not see the conversation. If category=problem: " +
+          "Symptom: ... | Cause: <root> | Solution: <reproducible> | Files: ...",
       ),
     tags: tool.schema
       .string()
       .optional()
-      .describe("Palavras-chave separadas por espaco, sem '#' (ex.: 'selinux module')."),
+      .describe("Space-separated keywords, without '#' (e.g. 'selinux module')."),
   },
   async execute(args) {
     const category = args.category;
@@ -125,21 +125,21 @@ export const add = tool({
       const missing = missingProblemSections(content);
       if (missing.length > 0) {
         return {
-          title: "notes_add: recusado (nota #problem incompleta)",
+          title: "notes_add: refused (incomplete #problem note)",
           output:
-            `❌ Nota NAO gravada. Falta em content: ${missing.join(", ")}.\n\n` +
-            "A convencao exige causa raiz e solucao reproduzivel, nao o sintoma repetido.\n" +
-            "Reescreva o content neste formato e chame de novo:\n" +
-            "Sintoma: <o que se observava / mensagem de erro> | " +
-            "Causa: <motivo raiz> | Solucao: <comando ou passos exatos> | " +
-            "Arquivos: <caminhos tocados, opcional>",
+            `❌ Note NOT saved. Missing from content: ${missing.join(", ")}.\n\n` +
+            "The convention requires a root cause and a reproducible solution, not a restated symptom.\n" +
+            "Rewrite the content in this format and call again:\n" +
+            "Symptom: <what was observed / error message> | " +
+            "Cause: <root cause> | Solution: <exact command or steps> | " +
+            "Files: <paths touched, optional>",
           metadata: { rejected: true, missing },
         };
       }
     }
 
     if (!args.title.trim()) {
-      return { title: "notes_add: recusado", output: "❌ title vazio." };
+      return { title: "notes_add: refused", output: "❌ empty title." };
     }
 
     const run = await runNb(["add", `#${category}`, args.title, tags, content]);
@@ -153,20 +153,20 @@ export const add = tool({
 
 export const search = tool({
   description:
-    "Busca na memoria de longa duracao. Sem 'query', lista as notas mais recentes. " +
-    "Multiplas palavras sao combinadas com OR (casa qualquer uma). Use ANTES de " +
-    "trabalhar num projeto com historico e antes de gravar uma nota nova.",
+    "Search long-term memory. Without 'query', lists the most recent notes. " +
+    "Multiple words are combined with OR (matches any). Use BEFORE working on a " +
+    "project with history and before saving a new note.",
   args: {
     query: tool.schema
       .string()
       .optional()
-      .describe("Termo(s) de busca. Omitir ou deixar vazio equivale a listar as ultimas notas."),
+      .describe("Search term(s). Omit or leave empty to list the latest notes."),
     limit: tool.schema
       .number()
       .int()
       .positive()
       .optional()
-      .describe("Maximo de notas a retornar (padrao: 10)."),
+      .describe("Max notes to return (default: 10)."),
   },
   async execute(args) {
     const query = (args.query ?? "").trim();
@@ -175,7 +175,7 @@ export const search = tool({
       ? await runNb(["search", query, String(limit)])
       : await runNb(["list", String(limit)]);
     return {
-      title: query ? `notes_search: ${query}` : "notes_search: ultimas notas",
+      title: query ? `notes_search: ${query}` : "notes_search: latest notes",
       output: render(run),
       metadata: { query, limit, exit: run.code },
     };
@@ -184,10 +184,10 @@ export const search = tool({
 
 export const doctor = tool({
   description:
-    "Diagnostico do subsistema de memoria: python/sqlite, disponibilidade de FTS5 " +
-    "(busca full-text; se ausente, o CLI degrada para LIKE), caminho e versao do " +
-    "schema do banco, contagem de notas e sincronia do indice. Use quando uma " +
-    "busca/gravacao falhar ou para saber se a maquina esta pronta.",
+    "Memory subsystem diagnosis: python/sqlite, FTS5 availability (full-text " +
+    "search; when absent the CLI degrades to LIKE), database schema path and " +
+    "version, note count and index sync. Use when a search/save fails or to " +
+    "check whether the machine is ready.",
   args: {},
   async execute() {
     const run = await runNb(["doctor"]);
