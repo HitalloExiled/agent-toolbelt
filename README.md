@@ -1,0 +1,165 @@
+# agent-toolbelt
+
+Tools e skills do agente, mais o **bootstrap de máquina** que os instala.
+Nasceu de dois subsistemas:
+
+- **`notes`** — memória de longa duração do agente (SQLite + FTS5 opcional),
+  exposta como CLI global `notes` e como as tools `notes_add` /
+  `notes_search` / `notes_doctor`.
+- **`sandbox`** — delegação de trabalho com risco para um container Docker
+  descartável, via as tools `sandbox_run` / `sandbox_logs` / `sandbox_status`
+  (wrapper do CLI `opencode-sb`, do repo `opencode-sandbox`).
+
+Tudo é **conteúdo genérico** (`tools/`, `skills/`, `memory/`); o acoplamento
+com o OpenCode vive só no `install.sh`. Trocar de harness = reescrever o
+`install.sh`.
+
+## Layout
+
+```
+agent-toolbelt/
+├── install.sh            # symlinks + migração de banco + verificação
+├── memory/
+│   ├── notes.py          # o CLI (stdlib puro: sqlite3)
+│   ├── notes             # wrapper bash (executa notes.py)
+│   ├── schema.sql        # schema base (v1), idempotente
+│   ├── schema_fts.sql    # camada FTS5 (opcional)
+│   └── migrations/       # NNN_*.sql para v2+
+├── tools/
+│   ├── notes.ts
+│   └── sandbox.ts
+└── skills/
+    ├── notes/SKILL.md
+    └── sandbox/SKILL.md
+```
+
+## Instalação
+
+```bash
+./install.sh              # instala tudo
+./install.sh --check      # só diagnostica, não altera nada
+./install.sh --uninstall  # remove os symlinks (nunca toca nos dados)
+./install.sh --prefix DIR # instala sob DIR (teste/portátil)
+```
+
+O que o install faz:
+
+| Passo | Efeito |
+|---|---|
+| plugin | garante `@opencode-ai/plugin` resolvível a partir do repo (npm, ou symlink do config do OpenCode) |
+| memória | symlink `~/.local/bin/notes` → `memory/notes`; migra o banco legado, se existir |
+| skills | symlink `skills/<id>/SKILL.md` → `~/.config/opencode/skills/<id>/SKILL.md` |
+| tools | symlink `tools/*.ts` → `~/.config/opencode/tools/` |
+| verificação | roda `notes init`, `notes doctor` e checa `docker` / `opencode-sb` |
+
+Arquivos reais que estejam no caminho são **movidos para backup**
+(`*.bak-<timestamp>`), nunca apagados.
+
+## Máquina zerada: o que é criado, quando
+
+**Nada é criado à mão.** O banco e o schema são criados sob demanda: toda
+invocação roda `init_db()` antes de tocar nos dados. `notes list` numa máquina
+nova já cria tudo.
+
+```
+$XDG_DATA_HOME/opencode/memory/notes.db     # banco (estado; nunca versionado)
+```
+
+| Objeto | Origem |
+|---|---|
+| banco | `init_db()` |
+| `notes` (tabela) + índices | `schema.sql` |
+| `notes_fts` + shadow tables + triggers | `schema_fts.sql` (só se houver FTS5) |
+| `user_version` = 1 | `SCHEMA_VERSION` em `notes.py` |
+| migrações `≥ 2` | `migrations/NNN_*.sql`, aplicadas por `user_version` |
+
+**Degradação:** se o `python3` da máquina não tiver FTS5, o CLI avisa e a busca
+cai para `LIKE` — a memória continua funcionando. `notes doctor` reporta isso.
+
+**FTS5 é auto-reparador:** a camada FTS roda em todo init (não só quando a
+tabela falta), então bancos antigos ganham os triggers de `UPDATE`/`DELETE`
+introduzidos depois. `notes reindex` reconstrói o índice.
+
+### Backup e transporte
+
+O banco é estado local, então não vai para o git. Para levar a memória entre
+máquinas:
+
+```bash
+notes export ~/notes-backup.json   # ou '-' para stdout
+notes import ~/notes-backup.json   # append, ignorando duplicadas
+```
+
+## CLI
+
+```bash
+notes add "<categoria>" "<título>" "<tags>" "<conteúdo>"
+notes search "<termo>" [limite]    # múltiplas palavras = OR
+notes list [limite]                # padrão 10
+notes doctor                       # python/sqlite, FTS5, schema, contagem, índice
+notes init                         # cria/atualiza (idempotente)
+notes export [arquivo|-]           # JSON
+notes import <arquivo|->           # JSON
+notes reindex                      # reconstrói o índice FTS5
+```
+
+Categorias: `#problem`, `#decision`, `#config`, `#snippet`, `#architecture`,
+`#general`. Tags sem `#`. Variável de ambiente: `NOTES_DB` (caminho do banco).
+
+**Manutenção destrutiva** (`wipe`) existe, mas exige TTY + confirmação
+digitada, não tem flag não-interativa, não aparece no help sem TTY e **não é
+exposta por nenhuma tool** — é para o humano, no terminal dele.
+
+## Tools
+
+| Tool | O que faz |
+|---|---|
+| `notes_add` | grava uma nota; **recusa** `#problem` sem Sintoma/Causa/Solução |
+| `notes_search` | busca; sem `query`, lista as últimas |
+| `notes_doctor` | diagnostica memória/schema/FTS5 |
+| `sandbox_run` | tarefa isolada; devolve resposta final, exit code e artefatos |
+| `sandbox_logs` | audita a rede (`proxy.log`) de um run |
+| `sandbox_status` | estado dos containers do sandbox |
+
+Por que tools e não só a skill: o guardrail de `#problem` **garante** o formato
+(a skill só pede), a execução é via `argv` sem shell (conteúdo com aspas, `;`,
+`$(...)` ou quebras de linha é literal), e o resultado já vem estruturado.
+
+## Permissões (OpenCode)
+
+As skills ficam sob allow-list no config do OpenCode:
+
+```jsonc
+"permissions": [
+  { "action": "skill", "resource": "*",        "effect": "deny"  },
+  { "action": "skill", "resource": "notes",    "effect": "allow" },
+  { "action": "skill", "resource": "sandbox",  "effect": "allow" }
+]
+```
+
+## Desenvolvimento
+
+```bash
+npm install        # devDeps: typescript, @types/node, @opencode-ai/plugin
+npm run typecheck
+```
+
+Testes de fumaça do CLI (sem instalar nada):
+
+```bash
+NOTES_DB=/tmp/notes-test.db python3 memory/notes.py doctor
+NOTES_DB=/tmp/notes-test.db python3 memory/notes.py add "#general" "t" "tag" "conteudo"
+```
+
+Teste do `install.sh` sem tocar na máquina real:
+
+```bash
+./install.sh --prefix /tmp/atb-test
+```
+
+## Adicionando um componente
+
+1. Tool: crie `tools/<nome>.ts` exportando `tool({...})`; export nomeado vira
+   `<nome>_<export>`. Rode `npm run typecheck`.
+2. Skill: crie `skills/<id>/SKILL.md` com frontmatter `name`/`description`.
+3. `./install.sh` já symlinka tudo que estiver nessas pastas.

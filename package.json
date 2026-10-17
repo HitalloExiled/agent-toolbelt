@@ -1,0 +1,15 @@
+{
+  "name": "agent-toolbelt",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Tools e skills do agente + bootstrap de maquina (memoria em SQLite, sandbox Docker).",
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@opencode-ai/plugin": "1.17.7",
+    "@types/node": "24.12.2",
+    "typescript": "5.8.2"
+  }
+}

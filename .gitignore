@@ -1,0 +1,13 @@
+node_modules/
+__pycache__/
+*.pyc
+
+# A memoria e estado local da maquina, nunca conteudo de repo.
+*.db
+*.db-shm
+*.db-wal
+*.db-journal
+*.export.json
+
+# Backups criados pelo install.sh ao substituir arquivos reais.
+*.bak-*
