@@ -1,111 +1,92 @@
 ---
 name: notes
-description: Memória de longa duração em SQLite (FTS5) via CLI global `notes` e das tools `notes_add`/`notes_search`/`notes_doctor`. Use para lembrar ou recuperar decisões, configurações, snippets e contexto de projeto de sessões anteriores, e para gravar novas notas — incluindo o registro obrigatório de problemas resolvidos com sintoma, causa e solução. Recorra sempre que o usuário perguntar o que foi decidido/feito antes, pedir contexto anterior, ou antes de trabalhar em projeto com histórico.
+description: Long-term memory in SQLite (FTS5) via global CLI `notes` and tools `notes_add`/`notes_search`/`notes_doctor`. Use to remember or recover decisions, configuration, snippets, and project context from previous sessions, and to record new notes — including the mandatory registration of resolved problems with symptom, cause, and solution. Refer to it whenever the user asks what was decided/done before, asks for previous context, or before working on a project with history.
 metadata:
   audience: any
   opencode/slash: "true"
 ---
 
-## O que é
+## What it is
 
-Sistema de memória de longa duração baseado em SQLite (+ índice FTS5 quando
-disponível), exposto pelo CLI global `notes`. O banco fica em
-`~/.local/share/opencode/memory/notes.db` (ou no caminho de `$NOTES_DB`) e —
-junto com o schema — é criado sob demanda: uma máquina zerada não precisa de
-passo manual nenhum.
+Long-term memory system based on SQLite (+ FTS5 index when available), exposed via the global CLI `notes`. The database lives at `~/.local/share/opencode/memory/notes.db` (or at the path in `$NOTES_DB`) and — together with the schema — is created on demand: a fresh machine needs no manual steps at all.
 
-Implementação e instalação: repo **`agent-toolbelt`** (seção `memory/`).
+Implementation and installation: repo **`agent-toolbelt`** (section `memory/`).
 
-## Como usar
+## How to use
 
-**Dentro do OpenCode, prefira as tools** (tipadas, sem shell, com validação):
+**Inside OpenCode, prefer the tools** (typed, shell-free, with validation):
 
-| Tool | Para que |
+| Tool | For |
 |---|---|
-| `notes_search` | buscar / listar as últimas notas (sem `query` = listar) |
-| `notes_add` | gravar uma nota (valida o formato de `#problem`) |
-| `notes_doctor` | diagnosticar memória/schema/FTS5 quando algo falha |
+| `notes_search` | search / list recent notes (without `query` = list) |
+| `notes_add` | record a note (validates the `#problem` format) |
+| `notes_doctor` | diagnose memory/schema/FTS5 when something fails |
 
-Pelo terminal (ou se as tools não estiverem disponíveis), o CLI equivalente:
-
-```bash
-notes search "<termo>" [limite]   # múltiplas palavras = OR (casa qualquer uma)
-notes list [limite]               # padrão: 10
-notes add "<categoria>" "<título>" "<tags>" "<conteúdo>"
-notes doctor                      # diagnóstico
-```
-
-## Quando usar
-
-- **Ao iniciar trabalho** num projeto com histórico: busque antes de agir.
-- **Ao resolver um problema não-trivial**: registre sintoma → causa → solução
-  (seção abaixo). É a regra mais importante da skill.
-- **Ao tomar decisões importantes** (arquitetura, trade-offs, configuração não
-  óbvia): grave com categoria `#decision`.
-- **Ao gerar snippets/configurações reutilizáveis**: `#snippet` / `#config`.
-- **Nunca apague nem sobrescreva o banco de memória.** Se o usuário pedir para
-  limpar o histórico, oriente-o a rodar a manutenção manualmente no terminal
-  dele — não faça isso você mesmo, e não são comandos do CLI expostos aqui.
-
-## Registrar problemas resolvidos (obrigatório)
-
-Sempre que resolver um problema **não-trivial** — bug, erro de configuração,
-comportamento inesperado, falha de dependência, regressão — grave uma nota
-`#problem` **antes de encerrar a tarefa**. A próxima sessão não deve remedir o
-mesmo problema: sua nota é o atalho.
-
-**Conteúdo obrigatório: Sintoma, Causa, Solução.** A tool `notes_add`
-**recusa** a gravação de uma nota `#problem` que não tenha as três seções.
-
-```
-Sintoma: <o que se observava / mensagem de erro>
-Causa: <motivo raiz, não o sintoma>
-Solução: <o que resolveu, reproduzível>
-Arquivos: <caminhos tocados, opcional>
-```
-
-Regras:
-
-- **Causa raiz, não sintoma.** "Faltava `exec` em `/tmp` no mount" é causa;
-  "o comando falhava" é sintoma.
-- **Solução reproduzível:** o comando ou os passos exatos, não "ajustei a config".
-- **Não registre o trivial** (typo seu, dúvida de sintaxe, comando que você
-  errou). O critério: se outro agente pode cair no mesmo problema, registre.
-- **Antes de gravar, busque.** Se o mesmo problema já está documentado com a
-  mesma solução, não duplique.
-- Vários problemas resolvidos numa sessão = várias notas, uma por problema.
-
-## Convenções
-
-- **Categorias**: `#problem`, `#decision`, `#config`, `#snippet`,
-  `#architecture`, `#general`.
-- **Tags**: palavras-chave separadas por espaço, sem `#` (ex.: `selinux module`).
-- **Título**: curto e específico — para problemas, descreva o sintoma
-  (ex.: "sandbox TUI falha sem exec em /tmp").
-- **Conteúdo**: o fato/decisão + o porquê + comandos ou caminhos relevantes.
-  Escreva para quem não viu a conversa.
-
-## Backup e transporte
-
-O banco é estado local, não versionado. Para levar a memória entre máquinas
-(ou guardar uma cópia):
+Via terminal (or when tools are unavailable), the equivalent CLI:
 
 ```bash
-notes export ~/notes-backup.json    # ou 'notes export -' para stdout
-notes import ~/notes-backup.json    # append, ignorando duplicadas
+notes search "<term>" [limit]   # multiple words = OR (matches any)
+notes list [limit]              # default: 10
+notes add "<category>" "<title>" "<tags>" "<content>"
+notes doctor                      # diagnosis
 ```
 
-`notes reindex` reconstrói o índice FTS5 se ele sair de sincronia (o `notes doctor`
-avisa quando isso acontece).
+## When to use
 
-## Verificação rápida
+- **Starting work** on a project with relevant history: search before acting.
+- **Resolving a non-trivial problem**: register symptom → cause → solution (section below). This is the most important rule of the skill.
+- **Making important decisions** (architecture, trade-offs, non-obvious configuration): record with category `#decision`.
+- **Generating reusable snippets/configurations**: `#snippet` / `#config`.
+- **Never delete or overwrite the memory database.** If the user asks to clear the history, direct them to run maintenance manually in their own terminal — do not do it yourself, and these are not CLI commands exposed here.
+
+## Registering solved problems (mandatory)
+
+Whenever you solve a **non-trivial** problem — bug, configuration error, unexpected behavior, dependency failure, regression — record a `#problem` note **before closing the task**. The next session must not re-live the same problem: your note is the shortcut.
+
+**Required content: Symptom, Cause, Solution.** The `notes_add` tool **refuses** to record a `#problem` note that lacks the three sections.
+
+```
+Symptom: <what was observed / error message>
+Cause: <root cause, not the symptom>
+Solution: <what fixed it, reproducible>
+Files: <paths touched, optional>
+```
+
+Rules:
+
+- **Root cause, not symptom.** "Missing `exec` on `/tmp` mount" is a cause; "the command failed" is a symptom.
+- **Reproducible solution:** the exact command or steps that fix it, not "I tweaked the config".
+- **Do not register trivial matters** (your typo, a syntax doubt, a command you mistyped). The criterion: if another agent could fall into the same problem, record it.
+- **Before recording, search.** `notes search "<symptom>"`. If the same problem is already documented with the same solution, do not duplicate.
+- Multiple problems solved in one session = several notes, one per problem.
+
+## Conventions
+
+- **Categories**: `#problem`, `#decision`, `#config`, `#snippet`, `#architecture`, `#general`.
+- **Tags**: keywords separated by space, without `#` (e.g.: `selinux module`).
+- **Title**: short and specific — for problems, describe the symptom (e.g. "sandbox TUI fails without exec on /tmp").
+- **Content**: the fact/decision + the why + relevant commands or paths. Write for someone who hasn't seen the conversation.
+
+## Backup and transport
+
+The database is local state, not versioned. To carry memory between machines (or keep a copy):
 
 ```bash
-notes doctor        # python/sqlite, FTS5, schema, contagem, sincronia do índice
-type -a notes       # deve apontar para ~/.local/bin/notes
+notes export ~/notes-backup.json    # or 'notes export -' for stdout
+notes import ~/notes-backup.json    # append, ignoring duplicates
 ```
 
-Se `notes` não existir, o wrapper e o schema vivem em `agent-toolbelt/memory/`;
-reinstale com `./install.sh` na raiz do repo. Se o `python3` da máquina não
-tiver FTS5, o `doctor` avisa e a busca cai para `LIKE` — a memória continua
-funcionando.
+`notes reindex` rebuilds the FTS5 index if it goes out of sync (`notes doctor` warns when this happens).
+
+## Quick check
+
+```bash
+notes doctor        # python/sqlite, FTS5, schema, count, index sync
+which notes         # should point to ~/.local/bin/notes
+```
+
+If `notes` doesn't exist, the wrapper and schema live in `agent-toolbelt/memory/`; reinstall with `./install.sh` in the repo root. If the machine's `python3` lacks FTS5, `doctor` warns and search falls back to `LIKE` — memory keeps working.
+
+## Writing notes in English
+
+**Notes must be written in English** to keep the memory usable across agents and sessions. Existing Portuguese notes remain in the database as legacy; new notes go in English following the Symptom / Cause / Solution format above.

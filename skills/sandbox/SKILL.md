@@ -1,133 +1,118 @@
 ---
 name: sandbox
-description: Sandbox Docker descartável para delegar tarefas com risco. Use SEMPRE que a tarefa puder afetar a estabilidade do sistema (mexer em pacotes, serviços, kernel, /etc, discos, permissões), executar código/scripts/dependências não confiáveis, rodar comandos destrutivos ou de resultado incerto, processar arquivos potencialmente maliciosos, ou consultar/baixar fontes pouco confiáveis na internet. O sandbox não enxerga o filesystem do host (entrada só por copy_in, saída só por /workspace/out) e a internet passa por um proxy que registra tudo, ou é cortada com sealed. Você (host) atua como orquestrador pelas tools `sandbox_run`/`sandbox_logs`/`sandbox_status` ou pelo CLI global `opencode-sb`. Não use para perguntas simples/read-only que você resolve localmente.
+description: Disposable Docker sandbox to delegate risky work. Use ALWAYS when a task could affect system stability (touching packages, services, kernel, /etc, disks, permissions), executing untrusted code/scripts/dependencies, running destructive or uncertain commands, processing potentially malicious files, or consulting/downloading dubious internet sources. The sandbox does not see the host filesystem (input only via copy_in, output only via /workspace/out) and internet goes through a logging proxy, or is cut with sealed. You (host) act as orchestrator via tools `sandbox_run`/`sandbox_logs`/`sandbox_status` or the global CLI `opencode-sb`. Do not use for simple read-only questions you answer locally.
 metadata:
   audience: any
   opencode/slash: "true"
 ---
 
-## O que é
+## What it is
 
-`opencode-sandbox` executa uma instância OpenCode efêmera dentro de um container
-Docker descartável. Você delega a tarefa e ela roda isolada do host: **sem acesso
-ao seu filesystem**, sem docker.sock, sem capabilities, com egress de rede
-controlado. Serve para fazer o trabalho sujo longe da máquina real.
+`opencode-sandbox` runs an ephemeral OpenCode instance inside a disposable Docker container. You delegate the task and it runs isolated from the host: **no access to your filesystem**, no docker.sock, no capabilities, egress network controlled. It's for doing the dirty work away from the real machine.
 
-CLI global: `opencode-sb` (alias de `opencode-sandboxed`).
-Projeto: repo `opencode-sandbox` — `README.md` e `ORCHESTRATION.md` para a
-referência completa.
+Global CLI: `opencode-sb` (alias of `opencode-sandboxed`).
+Project: repo `opencode-sandbox` — `README.md` and `ORCHESTRATION.md` for full reference.
 
-## Como orquestrar
+## How to orchestrate
 
-**Dentro do OpenCode, prefira as tools:**
+**Inside OpenCode, prefer the tools:**
 
-| Tool | Para que |
+| Tool | For |
 |---|---|
-| `sandbox_run` | executa a tarefa e devolve resposta final, exit code e artefatos |
-| `sandbox_logs` | audita a rede (`proxy.log`) de um run ou da sessão |
-| `sandbox_status` | estado dos containers de sessão/proxy/relay |
+| `sandbox_run` | runs the task and returns final answer, exit code, and artifacts |
+| `sandbox_logs` | audits the network (`proxy.log`) of a run or of the session |
+| `sandbox_status` | state of session/proxy/relay containers |
 
-Equivalente no terminal:
+Equivalent on the terminal:
 
 ```bash
-opencode-sb task --model <ref> --timeout 1800 \
-  --prompt "<tarefa autocontida>" [--copy-in <host-path>]... [--sealed]
+opencode-sb task --model  --timeout 1800 \
+  --prompt "<self-contained task>" [--copy-in <host-path>]... [--sealed]
 ```
 
-- **Bloqueante**: retorna quando termina ou estoura o `--timeout`.
-- **Exit code**: `0` sucesso, `124` timeout (inconclusivo), outro = falha.
-- **Sempre passe `--model`** explicitamente, para determinismo.
-- De um shell sandboxed, exporte `DOCKER_HOST=unix:///var/run/docker.sock`
-  (as tools já fazem isso automaticamente).
+- **Blocking**: returns when the task finishes or the `--timeout` is reached.
+- **Exit code**: `0` success, `124` timeout (inconclusive), other = failure.
+- **Always pass `--model`** explicitly, for determinism.
+- From a sandboxed shell, export `DOCKER_HOST=unix:///var/run/docker.sock` (the tools do this automatically).
 
-### Sessão interativa (trabalho iterativo)
+### Interactive session (iterative work)
 
 ```bash
-opencode-sb             # TUI numa sessão longeva
-opencode-sb run "msg"   # one-shot na sessão; imprime a resposta
-opencode-sb status      # estado de sessão/proxy/relay
-opencode-sb down        # destrói a sessão ao terminar
+opencode-sb             # TUI in a long-lived session
+opencode-sb run "msg"   # one-shot message in the session; prints the reply
+opencode-sb status      # session/proxy/relay state
+opencode-sb down        # destroy the session when done
 ```
 
-Estado da sessão vive em tmpfs até `down`. Prefira `task` para trabalho isolado.
+Session state lives in the container's tmpfs until `down`. Prefer `task` for isolated work.
 
-## Isolamento de rede
+## Network isolation
 
-- **Padrão (egress imposto):** internet **só** pelo proxy que registra tudo.
-  Quem não honra `HTTP(S)_PROXY` falha — é o modo de falha pretendido.
-- **`--sealed`:** zero internet. Use ao processar entrada não confiável/maliciosa
-  ou quando precisar garantir que não há exfiltração.
+- **Default (enforced egress):** internet **only** through the proxy that logs everything.
+  Anything that doesn't honor `HTTP(S)_PROXY` fails — the intended failure mode, and what makes the log trustworthy.
+- **`--sealed`:** no internet at all. Use when processing untrusted/malicious input or when you must guarantee no exfiltration.
 
-## Artefatos
+## Artifacts
 
-Em `runs/<run-id>/` dentro do repo `opencode-sandbox`:
+In `runs/<run-id>/` inside repo `opencode-sandbox`:
 
-| Arquivo | O que é |
+| File | What it is |
 |---|---|
-| `result.json` | eventos da execução em JSON (stream); a **resposta final** está no último evento `text` — `sandbox_run` já extrai e devolve |
-| `out/` | arquivos escritos em `/workspace/out` (único canal de saída) |
-| `proxy.log` | auditoria de **todas** as requisições de internet (domínio/URL). **Não existe em `--sealed`** |
-| `stderr.log` | logs do OpenCode no sandbox |
+| `result.json` | execution events as JSON (stream); the **final answer** is in the last event — `sandbox_run` extracts and returns it |
+| `out/` | files written to `/workspace/out` (only output channel) |
+| `proxy.log` | audit of **all** internet requests (domain/URL). **Does not exist in `--sealed`** |
+| `stderr.log` | OpenCode logs in the sandbox |
 
-## Regras de prompt
+## Prompt rules
 
-- O agente começa com `/workspace` **vazio** e não vê o host. Seja autocontido.
-- Para passar arquivos, use `copy_in` / `--copy-in` (repetível) — caem em
-  `/workspace/<nome>`.
-- Mande o agente **escrever o entregável em `/workspace/out/`**.
-- Prompts longos: `--prompt-file arquivo` (ou `--prompt-file -` para stdin).
+- The agent starts with `/workspace` **empty** and cannot see the host. Make the prompt self-contained.
+- To pass files, use `copy_in` / `--copy-in` (repeatable) — they land in `/workspace/<name>`.
+- Tell the agent to **write the deliverable to `/workspace/out/`**.
+- Long prompts: `--prompt-file file` (or `--prompt-file -` for stdin).
 
-## Auditoria (obrigatória antes de confiar)
+## Audit (mandatory before trusting)
 
-Depois de qualquer tarefa, leia a resposta final e **revise a rede com
-`sandbox_logs` / `proxy.log`** (quando existir, ou seja, fora do `--sealed`)
-antes de confiar no resultado — especialmente se a tarefa lidou com entrada não
-confiável, para confirmar que nada foi exfiltrado nem veio de fonte inesperada.
+After any task, read the final answer and **review the network with `sandbox_logs` / `proxy.log`** (when it exists, i.e. outside `--sealed`) before trusting the result — especially if the task handled untrusted input, to confirm nothing was exfiltrated or came from an unexpected source.
 
-## Quando NÃO usar
+## When NOT to use
 
-- Perguntas read-only que você responde localmente (docs, código existente).
-- Tarefas que precisam, de fato, tocar arquivos/estado do host — nesse caso
-  avise o usuário; a ausência de superfície compartilhada é intencional.
+- Read-only questions you can answer locally (docs, existing code).
+- Tasks that actually need to touch host files/state — in that case tell the user; the lack of shared surface is intentional.
 
-## Nunca
+## Never
 
-- Não passe segredos do host (tokens, credenciais, `~/.config` além do provider
-  gerado) em prompts ou `copy_in`.
-- Não presuma que `/workspace` persiste entre tasks — cada `task` é limpo.
-- Não monte caminhos do host: a única superfície é `copy_in` (entrada) e `out/`
-  (saída).
-- Não confie em código/arquivo não confiável sem antes rodar `--sealed` e revisar
-  a saída e o log.
+- Never pass host secrets (tokens, credentials, `~/.config` beyond the generated provider config) into prompts or `copy_in`.
+- Don't assume `/workspace` persists across tasks — each `task` is fresh.
+- Never mount host paths: the only surface is `copy_in` (input) and `out/` (output).
+- Don't trust untrusted code/files without first running `--sealed` and reviewing output and log.
 
-## Exemplos
+## Examples
 
 ```bash
-# 1) Testar um script desconhecido baixado da internet
+# 1) Test an unknown script downloaded from the internet
 opencode-sb task --model llama.cpp/qwen3.8-gguf-max --timeout 900 \
-  --prompt "Baixe https://exemplo.duvidoso/inst.sh, inspecione o conteúdo e diga
-o que ele faz. NÃO execute. Grave o relatório em /workspace/out/analise.md."
+  --prompt "Download https://exemplo.duvidoso/inst.sh, inspect the content and say
+what it does. DO NOT execute. Write the report to /workspace/out/analise.md."
 
-# 2) Simular mudança de config do sistema sem tocar no host
+# 2) Simulate a system config change without touching the host
 opencode-sb task --model llama.cpp/qwen3.8-gguf-max --timeout 900 \
   --copy-in ./meu-sshd_config \
-  --prompt "Valide este sshd_config com 'sshd -t' e liste o que quebraria.
-Escreva o resultado em /workspace/out/validacao.txt."
+  --prompt "Validate this sshd_config with 'sshd -t' and list what would break.
+Write the result to /workspace/out/validacao.txt."
 
-# 3) Processar entrada potencialmente maliciosa, sem rede
+# 3) Process potentially malicious input, without network
 opencode-sb task --model llama.cpp/qwen3.8-gguf-max --sealed \
   --copy-in ./anexo-suspeito.bin \
-  --prompt "Analise o arquivo, identifique formato e IOCs. NÃO execute nada.
-Grave em /workspace/out/iocs.json."
+  --prompt "Analyze the file, identify format and IOCs. DO NOT execute anything.
+Write to /workspace/out/iocs.json."
 ```
 
-## Verificação rápida
+## Quick check
 
 ```bash
-opencode-sb help          # lista os comandos
-sandbox_status            # (tool) ou: opencode-sb status
-opencode-sb clean         # limpa containers órfãos
+opencode-sb help          # lists commands
+sandbox_status            # (tool) or: opencode-sb status
+opencode-sb clean         # removes orphaned containers
 ```
 
-Se `opencode-sb` não existir, instale pelo `install.sh` do repo
-`opencode-sandbox`.
+If `opencode-sb` does not exist, install via `install.sh` in repo `opencode-sandbox`.
