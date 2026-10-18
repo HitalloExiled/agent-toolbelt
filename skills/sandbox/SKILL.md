@@ -8,10 +8,10 @@ metadata:
 
 ## What it is
 
-`opencode-sandbox` runs an ephemeral OpenCode instance inside a disposable Docker container. You delegate the task and it runs isolated from the host: **no access to your filesystem**, no docker.sock, no capabilities, egress network controlled. It's for doing the dirty work away from the real machine.
+`opencode-sandbox` runs an ephemeral OpenCode instance inside a disposable Docker container. You delegate the task and it runs isolated from the host: **no access to your filesystem** by default, no docker.sock, no capabilities, egress network controlled. It's for doing the dirty work away from the real machine.
 
 Global CLI: `opencode-sb` (alias of `opencode-sandboxed`).
-Project: repo `opencode-sandbox` — `README.md` and `ORCHESTRATION.md` for full reference.
+Project: this repo's `sandbox/` dir — `sandbox/README.md` and `sandbox/ORCHESTRATION.md` for full reference.
 
 ## How to orchestrate
 
@@ -74,7 +74,7 @@ automatic fallback.
 
 ## Artifacts
 
-In `runs/<run-id>/` inside repo `opencode-sandbox`:
+In `sandbox/runs/<run-id>/` (repo `agent-toolbelt`):
 
 | File | What it is |
 |---|---|
@@ -88,6 +88,7 @@ In `runs/<run-id>/` inside repo `opencode-sandbox`:
 - The agent starts with `/workspace` **empty** and cannot see the host. Make the prompt self-contained.
 - To pass files, use `copy_in` / `--copy-in` (repeatable) — they land in `/workspace/<name>`.
 - Tell the agent to **write the deliverable to `/workspace/out/`**.
+- To land files **directly on the host**, pass `out_dir` / `--out-dir <dir>` (bind-mounted **rw** at `/workspace/out`). It is a **scratch/tmp** space — the untrusted agent can write/overwrite/delete anything in it, with no quota — so only ever point it at a disposable dir.
 - Long prompts: `--prompt-file file` (or `--prompt-file -` for stdin).
 
 ## Audit (mandatory before trusting)
@@ -103,7 +104,8 @@ After any task, read the final answer and **review the network with `sandbox_log
 
 - Never pass host secrets (tokens, credentials, `~/.config` beyond the generated provider config) into prompts or `copy_in`.
 - Don't assume `/workspace` persists across tasks — each `task` is fresh.
-- Never mount host paths: the only surface is `copy_in` (input) and `out/` (output).
+- Never point `out_dir` / `--out-dir` at anything but a disposable scratch dir — it is a real rw host mount.
+- Otherwise never mount host paths: the only surface is `copy_in` (input) and `out/` (output).
 - Don't trust untrusted code/files without first running `--sealed` and reviewing output and log.
 
 ## Examples
@@ -136,4 +138,4 @@ opencode-sb models --check # validate the preferred model refs
 opencode-sb clean         # removes orphaned containers
 ```
 
-If `opencode-sb` does not exist, install via `install.sh` in repo `opencode-sandbox`.
+If `opencode-sb` does not exist, install via `sandbox/install.sh` in this repo.

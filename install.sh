@@ -175,8 +175,8 @@ migrate_db() {
 check_sandbox() {
   if command -v opencode-sb >/dev/null 2>&1 || [ -x "$BIN_DIR/opencode-sb" ]; then
     say "  sandbox: CLI 'opencode-sb' encontrado"
-  elif [ -x "$ROOT/../opencode-sandbox/install.sh" ]; then
-    warn "opencode-sb ausente — rode: $ROOT/../opencode-sandbox/install.sh"
+  elif [ -x "$ROOT/sandbox/install.sh" ]; then
+    warn "opencode-sb ausente — rode: $ROOT/sandbox/install.sh"
   else
     warn "opencode-sb ausente — as tools de sandbox nao vao funcionar"
   fi

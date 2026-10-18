@@ -8,7 +8,7 @@ Nasceu de dois subsistemas:
   `notes_search` / `notes_doctor`.
 - **`sandbox`** — delegação de trabalho com risco para um container Docker
   descartável, via as tools `sandbox_run` / `sandbox_logs` / `sandbox_status`
-  (wrapper do CLI `opencode-sb`, do repo `opencode-sandbox`).
+  (wrapper do CLI `opencode-sb`, em `sandbox/`).
 
 Tudo é **conteúdo genérico** (`tools/`, `skills/`, `memory/`); o acoplamento
 com o OpenCode vive só no `install.sh`. Trocar de harness = reescrever o
@@ -28,6 +28,12 @@ agent-toolbelt/
 ├── tools/
 │   ├── notes.ts
 │   └── sandbox.ts
+├── sandbox/                  # sandbox (era o repo opencode-sandbox; agora versionado aqui)
+│   ├── run.sh                # orquestrador (task/up/down/logs/models/clean)
+│   ├── opencode-sandboxed    # CLI global (opencode-sb)
+│   ├── Dockerfile, proxy/, relay/
+│   ├── models.conf           # listas de preferência de modelo
+│   └── README.md, ORCHESTRATION.md
 └── skills/
     ├── notes/SKILL.md
     └── sandbox/SKILL.md

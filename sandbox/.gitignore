@@ -1,0 +1,2 @@
+# Per-run artifacts (results, logs, output) are ephemeral.
+runs/

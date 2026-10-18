@@ -1,0 +1,257 @@
+# opencode-sandbox
+
+Run [OpenCode](https://opencode.ai) tasks in hardened, ephemeral Docker containers.
+A host-side OpenCode agent (or a human) orchestrates tasks; each task runs in its
+own throwaway container with no access to host files and all internet traffic
+funneled through a logging proxy. For the rare case where the sandbox must drop
+files onto the host, there is an explicit, opt-in rw scratch dir (`--out-dir`).
+
+## Architecture
+
+```
+host
+├── NInfer → 127.0.0.1:18089 (localhost-only) ──┐
+├── llama.cpp → :8080 (published, 0.0.0.0)      │
+└── docker daemon                                 │
+    ├── model-relay-<net>  host netns, binds ONLY the bridge's own gateway
+    │                       <gateway>:18090 → 127.0.0.1:18089,
+    │                       addressed as `model-relay` (static hosts entry)
+    └── network "opencode-sandbox-net"
+        ├── proxy-<runid>    tinyproxy :8888, LOGS + ENFORCES egress
+        │                     (dual-homed: internal side + egress side)
+        └── sandbox-<runid>  OpenCode (non-root, read-only rootfs, capped)
+```
+
+Per task:
+
+1. `run.sh` builds images (first run), creates the network, starts a proxy and
+   ensures the model relay is up (see below).
+2. The sandbox container is created (read-only rootfs, tmpfs for `/workspace`,
+   state and caches). Your OpenCode config is rewritten
+   (`127.0.0.1:18089` → `model-relay:18090`) and seeded into the
+   container over the exec channel; requested files are streamed into
+   `/workspace` the same way (`docker cp` cannot see mount content on this
+   daemon, so all transfer uses `docker exec` stdio).
+3. Inside: `opencode run --standalone --auto --format json "<prompt>"`.
+4. Artifacts are collected into `runs/<run-id>/` and the containers are removed.
+
+## Model relay
+
+NInfer listens on host localhost only, which bridge containers cannot reach.
+`run.sh` therefore maintains one `model-relay-<net>` container per sandbox
+network: a stdlib-only python forwarder (`relay/forward.py`) in the host
+network namespace, bound **only** to that bridge's gateway IP, forwarding
+`<gateway>:18090` → `127.0.0.1:18089`. It is read-only, capability-dropped,
+has no shell access, and forwards a single fixed destination — the only thing
+it can ever do is relay model API traffic from that bridge. It persists across
+tasks (started on demand); `./run.sh clean` removes it.
+
+## Security model
+
+- **No host file access by default.** The only files that cross the boundary are
+  the ones you explicitly pass with `--copy-in`; results come back via
+  `/workspace/out` (copied into `runs/<run-id>/out`). `--out-dir DIR` is the one
+  opt-in exception: it bind-mounts DIR **rw** at `/workspace/out`, so the
+  untrusted agent can write/overwrite/delete anything inside it (see *Escape
+  hatch* below).
+- **Egress is enforced and audited.** The sandbox network is `--internal`, so
+  containers have no route to the internet at all. The only way out is the
+  dual-homed tinyproxy (internal side toward the sandbox, egress side to the
+  internet) — traffic that ignores the proxy simply fails rather than leaking
+  unlogged. Every request is logged to `runs/<run-id>/proxy.log`. Add `Filter`
+  rules in `proxy/tinyproxy.conf.in` to block specific domains.
+- **`--sealed`** drops the proxy entirely: internal network only, zero egress
+  (the model relay still works, since it is on the bridge's own gateway).
+- Hardened runtime: `--read-only` rootfs, `--cap-drop=ALL`,
+  `--security-opt no-new-privileges`, `--pids-limit=256`, `--shm-size=512m`,
+  CPU/memory caps, non-root user (uid 1000), no docker.sock, hard timeout.
+- Writable tmpfs areas (`/tmp`, `/workspace`, caches) are mounted **`exec`**:
+  required because bun/OpenTUI `dlopen`s a native library from `/tmp` (the TUI
+  fails with *"failed to map segment from shared object"* under the default
+  `noexec`), and because build outputs in `/workspace` must be runnable.
+  `noexec` inside the container buys nothing — the container is the boundary.
+- The sandbox user is non-root: no `dnf`, no system writes. Tooling is
+  preinstalled (git, ripgrep, python3, nodejs, jq, …); user-level installs work
+  (`pip install --user`, `npm install --prefix`).
+- Caveat: egress *is* enforced (an internal network plus a dual-homed proxy),
+  so nothing leaves unlogged. But the proxy is still an allowed channel: a
+  malicious task can deliberately exfiltrate data by POSTing it through the
+  proxy to an allowed domain — that traffic is recorded in `proxy.log` (which
+  is why you audit it) but not prevented. Use `--sealed` for untrusted input.
+
+## Escape hatch (`--out-dir`) — writing onto the host
+
+By default the sandbox is one-way: input via `--copy-in`, output collected into
+`runs/<run-id>/out`. When you need the sandbox to drop files straight into a host
+directory (e.g. recover generated artifacts without hunting through `runs/`),
+pass `--out-dir DIR`: DIR is bind-mounted **rw** at `/workspace/out`.
+
+**Treat DIR as a tmp.** The container runs untrusted code, so it can create,
+overwrite and delete anything inside DIR, and there is **no disk quota** and no
+overwrite protection. Point it at a disposable directory only. `run.sh`:
+
+- creates DIR as *you* (Docker would otherwise create a missing mount source as
+  `root`, unwritable by the uid-1000 sandbox user), then resolves it to a
+  canonical path;
+- refuses a handful of dangerous targets (`/`, `/home`, `/etc`, `/usr`, `/var`,
+  `/boot`, `/root`, `/proc`, `/sys`, `/dev`, `/run`, and `$HOME` itself).
+
+Symlinks inside DIR cannot escape it (the container has its own mount namespace,
+so `/etc/passwd` there is the container's), but the agent can still clobber real
+files you put there. With `--out-dir`, `/workspace/out` *is* the host dir, so no
+`runs/<run-id>/out` copy is made.
+
+```bash
+mkdir -p ~/sandbox-scratch
+opencode-sb task --out-dir ~/sandbox-scratch \
+  --prompt "fetch the data and write /workspace/out/report.csv"
+ls ~/sandbox-scratch            # report.csv, owned by you
+```
+
+## Global CLI
+
+`opencode-sandboxed` is the single entry point and is installable globally
+(symlinked into a PATH bin dir, same pattern as `nb` → `notebook`). The short
+alias `opencode-sb` is installed alongside it.
+
+```bash
+cd /home/rafael.franca/Projetos/My/agent-toolbelt/sandbox
+./install.sh                 # symlinks ~/.local/bin/{opencode-sandboxed,opencode-sb}
+./install.sh --bin ~/bin     # or another bin dir
+./install.sh --uninstall
+```
+
+It resolves symlinks, so it works from any directory:
+
+| Command | Does |
+|---|---|
+| `opencode-sb` | OpenCode TUI inside a session container (auto-starts it) |
+| `opencode-sb run "msg"` | one-shot message in the session, JSON reply |
+| `opencode-sb task …` | one-shot sandboxed task (same flags as `run.sh task`) |
+| `opencode-sb status` | session / proxy / relay state |
+| `opencode-sb logs [RUN-ID]` | follow the session egress log, or print a run's log |
+| `opencode-sb up [--out-dir DIR]` / `down` | start / stop the session container |
+| `opencode-sb models [--check]` | list the sandbox model catalog (`--check` validates refs) |
+| `opencode-sb clean` | remove orphaned sandbox/proxy/relay containers |
+
+`task` and `clean` exec `run.sh` directly, so exit codes propagate.
+
+## Session lifecycle
+
+`opencode-sb` and `opencode-sb run` reuse one long-lived session container
+(`opencode-sandbox-session`). `opencode-sb up` is idempotent:
+
+- **running** — reused as-is; the proxy and relay are re-checked, and the
+  seeded config is re-written if it went missing.
+- **stopped or absent** (e.g. after a reboot, which stops containers but does
+  not remove them) — the container is **removed and recreated**, because a
+  stopped container has already lost its tmpfs state (seeded config,
+  workspace) and may carry stale gateway bindings from before the reboot.
+
+So after a reboot, just run `opencode-sb` again — no manual cleanup needed.
+
+## Quick start
+
+```bash
+cd /home/rafael.franca/Projetos/My/agent-toolbelt/sandbox
+
+# One-shot task, from anywhere once installed (builds images on first run)
+opencode-sb task \
+  --model llama.cpp/qwen3.8-gguf-max \
+  --prompt "Write the word OK to /workspace/out/status.txt"
+
+# Task with input files, sealed (no internet)
+opencode-sb task --sealed --copy-in ./my-dir --prompt "refactor X, put result in /workspace/out"
+
+# Interactive session
+opencode-sb                  # OpenCode TUI inside the sandbox
+opencode-sb run "explain this codebase"
+opencode-sb status
+opencode-sb logs             # follow the session egress log
+opencode-sb down
+
+# Inspect a finished run
+cat runs/<run-id>/result.json
+ls   runs/<run-id>/out/
+opencode-sb logs <run-id>    # or: ./run.sh logs <run-id>
+
+opencode-sb clean            # remove orphaned containers
+```
+
+## Models
+
+Model references come from your host OpenCode config
+(`~/.config/opencode/opencode.jsonc`, override with `OPENCODE_HOST_CONFIG`),
+plus the built-in `opencode/*` provider (free models — no auth).
+
+**Prefer the free provider; fall back to local.** Pick per task:
+
+| Task | Reference |
+|---|---|
+| Default / most tasks | `opencode/deepseek-v4.1-flash-free` (free; needs egress) |
+| Large context (long inputs/diffs/files) | `llama.cpp/qwen3.8-gguf-single192` (Single 192K MTP) |
+| Task fans out to parallel agents | `llama.cpp/qwen3.8-gguf-duo128` (2x128K) or `llama.cpp/qwen3.8-gguf-quad` (4x64K) |
+
+Other local refs from the host config: `llama.cpp/qwen3.8-gguf-max` (Single
+256K) and `ninfer/qwen3.8-27b-64k/128k/192k/256k`.
+
+`--model` overrides the default. When it is omitted, `run.sh` resolves a
+**mode-aware default** from `models.conf`: the free model for online runs, and
+`llama.cpp/qwen3.8-gguf-single192` for `--sealed` (free models need internet, so
+they cannot run sealed).
+
+The catalog is bundled in the OpenCode version and **changes between releases**
+(models are added, renamed and retired). Check what the sandbox actually sees:
+
+```bash
+opencode-sb models            # list the catalog as the sandbox sees it
+opencode-sb models --check    # validate the preferred refs (exit != 0 if gone)
+```
+
+## Artifacts (`runs/<run-id>/`)
+
+| File | Content |
+|---|---|
+| `result.json` | `opencode run --format json` output (answer, usage, status) |
+| `stderr.log` | OpenCode stderr/log output |
+| `proxy.conf` | the tinyproxy config used (subnet allow-list) |
+| `proxy.log` | every request the task made through the proxy |
+| `out/` | contents of the container's `/workspace/out` |
+
+Exit code: `0` success, `124` timeout, other = task failed.
+
+## Limits and environment
+
+| Variable / flag | Default | Meaning |
+|---|---|---|
+| `CPUS` / `--cpus` | `4` | CPU limit |
+| `MEM` / `--mem` | `8g` | memory limit |
+| `TIMEOUT` / `--timeout` | `1800` | hard timeout in seconds |
+| `OPENCODE_HOST_CONFIG` | `~/.config/opencode/opencode.jsonc` | base config for the sandbox |
+
+## Layout
+
+```
+Dockerfile            worker image (fedora:44 + OpenCode; latest, or pinned via
+                      --build-arg OPENCODE_VERSION=…)
+proxy/Dockerfile      tinyproxy logging proxy image
+proxy/tinyproxy.conf.in  proxy config template ({{SUBNET}} allow-list)
+relay/forward.py      localhost model relay (stdlib-only TCP forwarder)
+models.conf           model preference lists (free / local-large / local-parallel)
+run.sh                orchestrator engine (task / up / down / logs / models / clean)
+opencode-sandboxed    global CLI (tui / run / task / up / down / status / logs / models / clean)
+install.sh            installs the CLI symlinks (opencode-sandboxed, opencode-sb)
+ORCHESTRATION.md      playbook for a host agent that delegates to this sandbox
+runs/                 per-run artifacts (gitignored)
+```
+
+This directory is `sandbox/` inside the `agent-toolbelt` repo.
+
+## Environment notes
+
+- `DOCKER_HOST` must point at the machine daemon. From a normal host terminal
+  this is already the case; from a sandboxed shell export first:
+  `export DOCKER_HOST=unix:///var/run/docker.sock`
+- The proxy conf bind-mount must live under `runs/`, because only repo paths
+  are guaranteed visible to the daemon — never `/tmp`. All other file
+  transfer uses `docker exec` stdio streaming.

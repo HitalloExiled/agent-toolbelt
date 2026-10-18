@@ -28,8 +28,9 @@ function sbCommand(): string {
 }
 
 /**
- * The opencode-sandbox project's runs/ directory, resolved through the CLI's
- * realpath (~/.local/bin/opencode-sb -> <repo>/opencode-sandboxed). Null when
+ * The sandbox project's runs/ directory (agent-toolbelt/sandbox/runs),
+ * resolved through the CLI's realpath
+ * (~/.local/bin/opencode-sb -> <repo>/sandbox/opencode-sandboxed). Null when
  * the CLI comes from PATH and is not a symlink.
  */
 function runsDir(): string | null {
@@ -80,7 +81,7 @@ function spawnCli(
         stderr:
           stderr +
           `\ncould not run '${sbCommand()}': ${err.message}\n` +
-          "install opencode-sandbox (the repo's install.sh) or set $SANDBOX_BIN.",
+          "install the sandbox (sandbox/ in the agent-toolbelt repo) or set $SANDBOX_BIN.",
       }),
     );
     child.on("close", (code) => {
@@ -122,12 +123,16 @@ function finalAnswer(runDir: string): string | null {
   return null;
 }
 
-function listOut(runDir: string): string[] {
+function listDir(dir: string): string[] {
   try {
-    return readdirSync(join(runDir, "out")).sort();
+    return readdirSync(dir).sort();
   } catch {
     return [];
   }
+}
+
+function listOut(runDir: string): string[] {
+  return listDir(join(runDir, "out"));
 }
 
 function render(run: Run): string {
@@ -147,7 +152,8 @@ export const run = tool({
     "agent starts with /workspace empty and writes deliverables to " +
     "/workspace/out. Prefer a free model; fall back to local (see the sandbox " +
     "skill's Model selection). After any task, audit the network with " +
-    "sandbox_logs.",
+    "sandbox_logs. Results are copied to the run dir by default; pass out_dir " +
+    "to bind a host scratch dir at /workspace/out so files land on the host.",
   args: {
     prompt: tool.schema
       .string()
@@ -168,6 +174,16 @@ export const run = tool({
       .array(tool.schema.string())
       .optional()
       .describe("Host paths to copy into /workspace (the only input channel)."),
+    out_dir: tool.schema
+      .string()
+      .optional()
+      .describe(
+        "Host dir to bind rw at /workspace/out: files the sandbox writes there " +
+          "land directly on the host (an escape hatch for recovering output). " +
+          "SCRATCH semantics — the untrusted agent can write/overwrite/delete " +
+          "anything in it, no overwrite protection and no disk quota, so point " +
+          "it at a disposable dir.",
+      ),
     sealed: tool.schema
       .boolean()
       .optional()
@@ -194,6 +210,7 @@ export const run = tool({
     if (args.cpus) argv.push("--cpus", String(args.cpus));
     if (args.mem) argv.push("--mem", args.mem);
     for (const path of args.copy_in ?? []) argv.push("--copy-in", path);
+    if (args.out_dir) argv.push("--out-dir", args.out_dir);
     if (args.sealed) argv.push("--sealed");
 
     // Host budget > sandbox timeout, so the 124 comes from the sandbox itself.
@@ -214,12 +231,18 @@ export const run = tool({
     if (runId && root) {
       const dir = join(root, runId);
       answer = finalAnswer(dir);
-      artifacts = listOut(dir);
+      artifacts = args.out_dir ? listDir(args.out_dir) : listOut(dir);
       if (answer) {
         lines.push("", "— final answer (result.json) —", answer);
       }
       lines.push("", `artifacts: ${dir}/`);
-      if (artifacts.length > 0) lines.push(`out/: ${artifacts.join(", ")}`);
+      if (args.out_dir) {
+        lines.push(
+          `out-dir: ${args.out_dir}/ (${artifacts.length} entr${artifacts.length === 1 ? "y" : "ies"}, rw escape hatch)`,
+        );
+      } else if (artifacts.length > 0) {
+        lines.push(`out/: ${artifacts.join(", ")}`);
+      }
       if (run.code !== 0 && !existsSync(join(dir, "proxy.log"))) {
         lines.push("proxy.log absent (sealed run, or no network requests)");
       }
@@ -228,7 +251,7 @@ export const run = tool({
     return {
       title: runId ? `sandbox_run ${runId} (exit ${run.code})` : `sandbox_run (exit ${run.code})`,
       output: lines.filter((l) => l !== undefined).join("\n"),
-      metadata: { run_id: runId, exit_code: run.code, artifacts, answer },
+      metadata: { run_id: runId, exit_code: run.code, artifacts, out_dir: args.out_dir ?? null, answer },
     };
   },
 });

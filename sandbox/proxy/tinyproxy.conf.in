@@ -1,0 +1,19 @@
+# tinyproxy config template (tinyproxy 1.x classic syntax: space-separated).
+# run.sh substitutes {{SUBNET}} with the sandbox network subnet so only
+# sandbox containers may use this proxy.
+Port 8888
+Timeout 300
+DefaultErrorFile "/usr/share/tinyproxy/default.html"
+# Access log -> tmpfs file so run.sh can extract it with `docker cp`.
+LogFile "/var/log/tinyproxy.log"
+LogLevel Info
+PidFile "/run/tinyproxy.pid"
+MaxClients 60
+ViaProxyName "opencode-sandbox"
+ConnectPort 443
+ConnectPort 80
+ConnectPort 8080
+ConnectPort 8443
+# Domain blocklist (uncomment to deny specific hosts, e.g. exfil targets):
+# Filter "example\.evil"
+Allow {{SUBNET}}

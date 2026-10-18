@@ -1,0 +1,110 @@
+#!/usr/bin/env bash
+#
+# opencode-sandboxed — global CLI for opencode-sandbox (alias: opencode-sb).
+#
+#   opencode-sandboxed                      enter the OpenCode TUI (auto-starts)
+#   opencode-sandboxed run MSG...           send one message, print the reply
+#   opencode-sandboxed up [--out-dir D] / down   start / stop the session container
+#   opencode-sandboxed status               show session, proxy and relay status
+#   opencode-sandboxed logs [RUN-ID]        tail session egress log, or a run log
+#   opencode-sandboxed task [OPTIONS]       run a one-shot sandboxed task
+#   opencode-sandboxed models [--check]     list the model catalog; --check validates
+#   opencode-sandboxed clean                remove orphaned sandbox/proxy/relay
+#
+# task options (passed through to run.sh task):
+#   --prompt TEXT | --prompt-file FILE|-
+#   --copy-in PATH (repeatable)   --model REF   --title TEXT
+#   --cpus N   --mem SIZE   --timeout SECS   --sealed
+#   --out-dir DIR (bind DIR rw at /workspace/out — scratch escape hatch)
+#   --strict (fail on an unknown --model)   --rebuild (rebuild images first)
+set -euo pipefail
+
+# Resolve the real location so this works when symlinked into ~/.local/bin.
+SOURCE="${BASH_SOURCE[0]}"
+while [ -L "$SOURCE" ]; do
+  DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+  SOURCE="$(readlink "$SOURCE")"
+  case "$SOURCE" in /*) ;; *) SOURCE="$DIR/$SOURCE" ;; esac
+done
+ROOT="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+
+SESSION="opencode-sandbox-session"
+SESSION_PROXY="opencode-sandbox-proxy-session"
+
+ensure_session() {
+  if docker ps --format '{{.Names}}' 2>/dev/null | grep -qx "$SESSION"; then
+    return 0
+  fi
+  "$ROOT/run.sh" up
+  # Guard against a session that exists but did not actually start (e.g. stale
+  # container left behind by a reboot). Fail loudly instead of letting the
+  # following `docker exec` emit a raw daemon error.
+  if ! docker ps --format '{{.Names}}' 2>/dev/null | grep -qx "$SESSION"; then
+    echo "error: session container '$SESSION' is not running after 'run.sh up'" >&2
+    exit 1
+  fi
+}
+
+cmd="${1:-tui}"
+case "$cmd" in
+  tui)
+    ensure_session
+    exec docker exec -it "$SESSION" opencode
+    ;;
+  run)
+    shift
+    if [ $# -eq 0 ]; then
+      echo "usage: opencode-sandboxed run <message...>" >&2
+      exit 2
+    fi
+    ensure_session
+    docker exec "$SESSION" opencode run --standalone --auto --format json "$@"
+    ;;
+  task)
+    shift
+    exec "$ROOT/run.sh" task "$@"
+    ;;
+  up)
+    exec "$ROOT/run.sh" up
+    ;;
+  down)
+    exec "$ROOT/run.sh" down
+    ;;
+  clean)
+    exec "$ROOT/run.sh" clean
+    ;;
+  models)
+    shift
+    exec "$ROOT/run.sh" models "$@"
+    ;;
+  status)
+    session="$(docker ps -a --filter "name=$SESSION" --format '{{.Names}} ({{.State}})' 2>/dev/null | head -n1)"
+    proxy="$(docker ps -a --filter "name=$SESSION_PROXY" --format '{{.Names}} ({{.State}})' 2>/dev/null | head -n1)"
+    relay="$(docker ps -a --filter 'name=model-relay-' --format '{{.Names}} ({{.State}})' 2>/dev/null | head -n1)"
+    echo "session : ${session:-stopped}"
+    echo "proxy   : ${proxy:-stopped}"
+    echo "relay   : ${relay:-stopped}"
+    if [ -n "$session" ]; then
+      echo "  attach: opencode-sandboxed   (alias: opencode-sb)"
+    fi
+    ;;
+  logs)
+    shift
+    if [ $# -gt 0 ]; then
+      exec "$ROOT/run.sh" logs "$1"
+    fi
+    if ! docker ps --format '{{.Names}}' 2>/dev/null | grep -qx "$SESSION_PROXY"; then
+      echo "no session proxy running (run 'opencode-sandboxed up'), or pass a run id: opencode-sandboxed logs <run-id>" >&2
+      exit 1
+    fi
+    exec docker logs -f "$SESSION_PROXY"
+    ;;
+  help|-h|--help)
+    sed -n '3,19p' "$0" | sed 's/^# \{0,1\}//'
+    ;;
+  *)
+    echo "unknown command: $cmd" >&2
+    echo "try: opencode-sandboxed | run | task | up | down | status | logs | models | clean" >&2
+    exit 2
+    ;;
+esac
