@@ -1,13 +1,14 @@
 /**
- * sandbox — delegacao de trabalho com risco para um container descartavel.
+ * sandbox — delegate risky work to a disposable container.
  *
- * Wrapper sobre o CLI global `opencode-sb` (opencode-sandbox). Leia a skill
- * `sandbox` antes de delegar: ela diz *quando* delegar e o contrato de prompt.
+ * Thin wrapper over the global `opencode-sb` CLI (opencode-sandbox). Read the
+ * `sandbox` skill before delegating: it says *when* to delegate and the prompt
+ * contract.
  *
- * O sandbox nao ve o filesystem do host: entrada apenas por `copy_in`, saida
- * apenas pelo que o agente escrever em /workspace/out (retornado em `out/`).
- * A internet passa por um proxy que registra tudo (auditavel via sandbox_logs)
- * ou e cortada com `sealed`.
+ * The sandbox does not see the host filesystem: input only via `copy_in`,
+ * output only via whatever the agent writes to /workspace/out (returned in
+ * `out/`). Internet goes through a proxy that logs everything (auditable via
+ * sandbox_logs) or is cut with `sealed`.
  */
 
 import { tool } from "@opencode-ai/plugin";
@@ -18,7 +19,7 @@ import { dirname, join } from "node:path";
 
 type Run = { code: number; stdout: string; stderr: string };
 
-/** Resolve o binario: $SANDBOX_BIN > ~/.local/bin/opencode-sb > PATH. */
+/** Resolve the binary: $SANDBOX_BIN > ~/.local/bin/opencode-sb > PATH. */
 function sbCommand(): string {
   if (process.env.SANDBOX_BIN) return process.env.SANDBOX_BIN;
   const local = join(homedir(), ".local", "bin", "opencode-sb");
@@ -27,9 +28,9 @@ function sbCommand(): string {
 }
 
 /**
- * Diretorio runs/ do projeto opencode-sandbox, resolvido pelo realpath do CLI
- * (~/.local/bin/opencode-sb -> <repo>/opencode-sandboxed). Null se o CLI vem
- * so do PATH e nao e um symlink.
+ * The opencode-sandbox project's runs/ directory, resolved through the CLI's
+ * realpath (~/.local/bin/opencode-sb -> <repo>/opencode-sandboxed). Null when
+ * the CLI comes from PATH and is not a symlink.
  */
 function runsDir(): string | null {
   try {
@@ -78,8 +79,8 @@ function spawnCli(
         stdout,
         stderr:
           stderr +
-          `\nnao foi possivel executar '${sbCommand()}': ${err.message}\n` +
-          "instale o opencode-sandbox (install.sh do repo) ou ajuste $SANDBOX_BIN.",
+          `\ncould not run '${sbCommand()}': ${err.message}\n` +
+          "install opencode-sandbox (the repo's install.sh) or set $SANDBOX_BIN.",
       }),
     );
     child.on("close", (code) => {
@@ -88,7 +89,7 @@ function spawnCli(
         code: timedOut ? 124 : code ?? -1,
         stdout,
         stderr: timedOut
-          ? stderr + `\n[agent-toolbelt] orcamento do host esgotado (${timeoutMs} ms)`
+          ? stderr + `\n[agent-toolbelt] host budget exhausted (${timeoutMs} ms)`
           : stderr,
       });
     });
@@ -96,7 +97,7 @@ function spawnCli(
   });
 }
 
-/** Ultimo evento `text` de result.json — a resposta final do agente do sandbox. */
+/** Last `text` event of result.json — the sandbox agent's final answer. */
 function finalAnswer(runDir: string): string | null {
   const path = join(runDir, "result.json");
   if (!existsSync(path)) return null;
@@ -115,7 +116,7 @@ function finalAnswer(runDir: string): string | null {
         return event.part.text;
       }
     } catch {
-      /* linha parcial (execucao interrompida) — ignora */
+      /* partial line (interrupted execution) — ignore */
     }
   }
   return null;
@@ -138,42 +139,51 @@ function render(run: Run): string {
 
 export const run = tool({
   description:
-    "Executa uma tarefa num sandbox Docker descartavel (OpenCode efemero, sem " +
-    "acesso ao filesystem do host) e retorna a resposta final, o exit code e os " +
-    "artefatos. BLOQUEANTE: pode levar minutos. Use para trabalho com risco " +
-    "(instalar/testar pacotes, rodar codigo nao confiavel, comandos destrutivos, " +
-    "entrada suspeita, fontes duvidosas na internet). O prompt deve ser " +
-    "autocontido: o agente comeca com /workspace vazio e escreve entregaveis em " +
-    "/workspace/out. Sempre passe model. Depois de qualquer tarefa, audite a rede " +
-    "com sandbox_logs.",
+    "Run a task in a disposable Docker sandbox (ephemeral OpenCode, no access " +
+    "to the host filesystem) and return the final answer, exit code and " +
+    "artifacts. BLOCKING: can take minutes. Use for risky work (installing/" +
+    "testing packages, running untrusted code, destructive commands, suspicious " +
+    "input, dubious internet sources). The prompt must be self-contained: the " +
+    "agent starts with /workspace empty and writes deliverables to " +
+    "/workspace/out. Prefer a free model; fall back to local (see the sandbox " +
+    "skill's Model selection). After any task, audit the network with " +
+    "sandbox_logs.",
   args: {
     prompt: tool.schema
       .string()
       .describe(
-        "Tarefa completa e autocontida. Instrua o agente a escrever o entregavel " +
-          "em /workspace/out/.",
+        "Complete, self-contained task. Instruct the agent to write the " +
+          "deliverable to /workspace/out/.",
       ),
     model: tool.schema
       .string()
       .optional()
-      .describe("Modelo do sandbox (ex.: 'llama.cpp/qwen3.8-gguf-max'). Passe sempre, para determinismo."),
+      .describe(
+        "Sandbox model ref. Prefer 'opencode/deepseek-v4.1-flash-free' (free; " +
+          "needs egress, so NOT with sealed), 'llama.cpp/qwen3.8-gguf-single192' " +
+          "for large context, 'llama.cpp/qwen3.8-gguf-duo128' or '...quad' for " +
+          "parallel agents. Omit to let the sandbox pick the mode-aware default.",
+      ),
     copy_in: tool.schema
       .array(tool.schema.string())
       .optional()
-      .describe("Caminhos do host a copiar para /workspace (unico canal de entrada)."),
+      .describe("Host paths to copy into /workspace (the only input channel)."),
     sealed: tool.schema
       .boolean()
       .optional()
-      .describe("Corta a internet por completo. Use com entrada nao confiavel ou para garantir zero exfiltracao."),
+      .describe(
+        "Cut the internet entirely. Use with untrusted input or to guarantee " +
+          "no exfiltration. Local models only (free needs egress).",
+      ),
     timeout: tool.schema
       .number()
       .int()
       .positive()
       .optional()
-      .describe("Timeout em segundos dentro do sandbox (padrao do CLI: 1800). 124 = estourou."),
-    cpus: tool.schema.number().int().positive().optional().describe("Limite de CPUs do container."),
-    mem: tool.schema.string().optional().describe("Limite de memoria (ex.: '8g')."),
-    title: tool.schema.string().optional().describe("Titulo da sessao no sandbox."),
+      .describe("Timeout in seconds inside the sandbox (CLI default: 1800). 124 = timed out."),
+    cpus: tool.schema.number().int().positive().optional().describe("Container CPU limit."),
+    mem: tool.schema.string().optional().describe("Memory limit (e.g. '8g')."),
+    title: tool.schema.string().optional().describe("Session title in the sandbox."),
   },
   async execute(args) {
     const timeout = args.timeout ?? 1800;
@@ -186,7 +196,7 @@ export const run = tool({
     for (const path of args.copy_in ?? []) argv.push("--copy-in", path);
     if (args.sealed) argv.push("--sealed");
 
-    // Orcamento do host > timeout do sandbox, para o 124 vir do proprio sandbox.
+    // Host budget > sandbox timeout, so the 124 comes from the sandbox itself.
     const run = await spawnCli(argv, args.prompt, timeout * 1000 + 180_000);
 
     const match = /task (run-[A-Za-z0-9-]+)/.exec(run.stderr);
@@ -194,7 +204,7 @@ export const run = tool({
 
     const lines: string[] = [];
     if (run.code === 124) {
-      lines.push("⏱️  timeout — resultado inconclusivo (nao trate como falha do codigo).");
+      lines.push("⏱️  timeout — inconclusive result (do not treat as a code failure).");
     }
     lines.push(render(run));
 
@@ -206,12 +216,12 @@ export const run = tool({
       answer = finalAnswer(dir);
       artifacts = listOut(dir);
       if (answer) {
-        lines.push("", "— resposta final (result.json) —", answer);
+        lines.push("", "— final answer (result.json) —", answer);
       }
-      lines.push("", `artefatos: ${dir}/`);
+      lines.push("", `artifacts: ${dir}/`);
       if (artifacts.length > 0) lines.push(`out/: ${artifacts.join(", ")}`);
       if (run.code !== 0 && !existsSync(join(dir, "proxy.log"))) {
-        lines.push("proxy.log ausente (run --sealed, ou nenhuma requisicao de rede)");
+        lines.push("proxy.log absent (sealed run, or no network requests)");
       }
     }
 
@@ -225,20 +235,20 @@ export const run = tool({
 
 export const logs = tool({
   description:
-    "Auditoria de rede de um sandbox run: mostra o proxy.log (todas as requisicoes " +
-    "de internet, dominio/URL). Sem run_id, mostra o log ao vivo do proxy da sessao. " +
-    "Use SEMPRE depois de um sandbox_run que teve rede, antes de confiar no resultado.",
+    "Network audit of a sandbox run: shows proxy.log (every internet request, " +
+    "domain/URL). Without run_id, shows the session proxy's live log. ALWAYS " +
+    "use after a sandbox_run that had network, before trusting the result.",
   args: {
     run_id: tool.schema
       .string()
       .optional()
-      .describe("Id do run (ex.: 'run-20261017T150656Z-6816'). Omitir = proxy da sessao longeva."),
+      .describe("Run id (e.g. 'run-20261017T150656Z-6816'). Omit = long-lived session proxy."),
   },
   async execute(args) {
     const argv = args.run_id ? ["logs", args.run_id] : ["logs"];
     const run = await spawnCli(argv, undefined, 60_000);
     return {
-      title: args.run_id ? `sandbox_logs ${args.run_id}` : "sandbox_logs (sessao)",
+      title: args.run_id ? `sandbox_logs ${args.run_id}` : "sandbox_logs (session)",
       output: render(run),
       metadata: { run_id: args.run_id ?? null, exit: run.code },
     };
@@ -247,7 +257,7 @@ export const logs = tool({
 
 export const status = tool({
   description:
-    "Estado do sandbox: container de sessao, proxy e relay (running/stopped).",
+    "Sandbox state: session, proxy and relay containers (running/stopped).",
   args: {},
   async execute() {
     const run = await spawnCli(["status"], undefined, 60_000);

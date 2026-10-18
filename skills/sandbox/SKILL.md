@@ -32,7 +32,7 @@ opencode-sb task --model  --timeout 1800 \
 
 - **Blocking**: returns when the task finishes or the `--timeout` is reached.
 - **Exit code**: `0` success, `124` timeout (inconclusive), other = failure.
-- **Always pass `--model`** explicitly, for determinism.
+- **Model**: see **Model selection** below — prefer free, fall back to local.
 - From a sandboxed shell, export `DOCKER_HOST=unix:///var/run/docker.sock` (the tools do this automatically).
 
 ### Interactive session (iterative work)
@@ -45,6 +45,26 @@ opencode-sb down        # destroy the session when done
 ```
 
 Session state lives in the container's tmpfs until `down`. Prefer `task` for isolated work.
+
+## Model selection
+
+Always pass a model; prefer OpenCode **free** models and fall back to **local**
+when a free run fails. This is guidance — you choose and retry, there is no
+automatic fallback.
+
+| Task | Model |
+|---|---|
+| Default / most tasks | `opencode/deepseek-v4.1-flash-free` |
+| Large context (long inputs, big files, long diffs) | `llama.cpp/qwen3.8-gguf-single192` (192K MTP) |
+| Task fans out to parallel agents | `llama.cpp/qwen3.8-gguf-duo128` (2x128K) or `llama.cpp/qwen3.8-gguf-quad` (4x64K) |
+
+- Free models need internet egress, so **`--sealed` runs must use a local model**.
+- If `--model` is omitted, the sandbox resolves a mode-aware default (free for
+  online runs, `single192` for `--sealed`).
+- The free catalog is bundled in the OpenCode version and **changes between
+  releases** (models are added, renamed and retired). If a run fails with
+  `provider.no-route`, or after updating OpenCode, run `opencode-sb models
+  --check` and pick from what it lists (`opencode-sb models` prints the catalog).
 
 ## Network isolation
 
@@ -112,6 +132,7 @@ Write to /workspace/out/iocs.json."
 ```bash
 opencode-sb help          # lists commands
 sandbox_status            # (tool) or: opencode-sb status
+opencode-sb models --check # validate the preferred model refs
 opencode-sb clean         # removes orphaned containers
 ```
 
