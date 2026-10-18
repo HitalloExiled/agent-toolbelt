@@ -111,6 +111,35 @@ ls ~/.sandbox/run-*/report.csv         # written by the sandbox, owned by you
 SANDBOX_OUT_ROOT=/tmp/sbx opencode-sb task --prompt "…"
 ```
 
+## Following a run
+
+`task` can stream the agent's work, and a run can be attached to after the fact:
+
+- **Live transcript (human).** On a terminal, `task` relays a compact view —
+  assistant messages and each tool call — as the agent works, while the raw JSON
+  event stream is still written verbatim to `runs/<run-id>/result.json`. Toggle
+  with `--follow` / `--no-follow` (default: on when stderr is a TTY).
+- **Detach, then attach.** `task --detach` returns immediately with the run id;
+  follow it later with `opencode-sb watch <run-id>` (full, live). Good for long
+  runs and for a human who wants their terminal back.
+- **Peek (bounded).** `opencode-sb peek [<run-id>] [-n N]` prints the run status
+  and only the **last N messages** (default 12, each line truncated) — no live
+  following, no unbounded output. This is what a **host agent** should use to
+  check a run without flooding its own context.
+
+```bash
+runid=$(opencode-sb task --detach --prompt "…" 2>/dev/null | awk '/^run /{print $2}')
+
+opencode-sb peek "$runid"      # snapshot: status + last 12 messages
+opencode-sb peek -n 4          # newest running run, last 4 messages
+opencode-sb watch "$runid"     # (human) full live transcript until it ends
+```
+
+`watch` and `peek` auto-pick the newest **running** run when no id is given
+(e.g. `opencode-sb peek` while a detached run is in flight). When a run
+finishes, `run.sh` writes its exit code to `runs/<run-id>/exit`; that marker is
+how both followers know to stop.
+
 ## Global CLI
 
 `opencode-sandboxed` is the single entry point and is installable globally
@@ -131,6 +160,8 @@ It resolves symlinks, so it works from any directory:
 | `opencode-sb` | OpenCode TUI inside a session container (auto-starts it) |
 | `opencode-sb run "msg"` | one-shot message in the session, JSON reply |
 | `opencode-sb task …` | one-shot sandboxed task (same flags as `run.sh task`) |
+| `opencode-sb watch [RUN-ID]` | follow a run's full live transcript (human) |
+| `opencode-sb peek [RUN-ID] [-n N]` | bounded snapshot: status + last N messages |
 | `opencode-sb status` | session / proxy / relay state |
 | `opencode-sb logs [RUN-ID]` | follow the session egress log, or print a run's log |
 | `opencode-sb up` / `down` | start / stop the session container |
@@ -221,6 +252,7 @@ opencode-sb models --check    # validate the preferred refs (exit != 0 if gone)
 | `proxy.conf` | the tinyproxy config used (subnet allow-list) |
 | `proxy.log` | every request the task made through the proxy |
 | `hostout` | path of the host output dir for this run (`SANDBOX_OUT_ROOT/<run-id>`) |
+| `exit` | the run's exit code, written last when it finishes (watchers stop on it) |
 
 Exit code: `0` success, `124` timeout, other = task failed.
 

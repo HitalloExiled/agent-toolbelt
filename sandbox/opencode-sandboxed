@@ -8,6 +8,8 @@
 #   opencode-sandboxed status               show session, proxy and relay status
 #   opencode-sandboxed logs [RUN-ID]        tail session egress log, or a run log
 #   opencode-sandboxed task [OPTIONS]       run a one-shot sandboxed task
+#   opencode-sandboxed watch [RUN-ID]       follow a run's live transcript (human)
+#   opencode-sandboxed peek [RUN-ID] [-n N] bounded snapshot: last N messages (agent)
 #   opencode-sandboxed models [--check]     list the model catalog; --check validates
 #   opencode-sandboxed clean                remove orphaned sandbox/proxy/relay
 #
@@ -15,6 +17,7 @@
 #   --prompt TEXT | --prompt-file FILE|-
 #   --copy-in PATH (repeatable)   --model REF   --title TEXT
 #   --cpus N   --mem SIZE   --timeout SECS   --sealed
+#   --follow/--no-follow   --detach (return now; follow with `watch RUN-ID`)
 #   --strict (fail on an unknown --model)   --rebuild (rebuild images first)
 set -euo pipefail
 
@@ -63,6 +66,14 @@ case "$cmd" in
     shift
     exec "$ROOT/run.sh" task "$@"
     ;;
+  watch)
+    shift
+    exec "$ROOT/run.sh" watch "$@"
+    ;;
+  peek)
+    shift
+    exec "$ROOT/run.sh" peek "$@"
+    ;;
   up)
     exec "$ROOT/run.sh" up
     ;;
@@ -99,11 +110,11 @@ case "$cmd" in
     exec docker logs -f "$SESSION_PROXY"
     ;;
   help|-h|--help)
-    sed -n '3,18p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '3,21p' "$0" | sed 's/^# \{0,1\}//'
     ;;
   *)
     echo "unknown command: $cmd" >&2
-    echo "try: opencode-sandboxed | run | task | up | down | status | logs | models | clean" >&2
+    echo "try: opencode-sandboxed | run | task | watch | peek | up | down | status | logs | models | clean" >&2
     exit 2
     ;;
 esac

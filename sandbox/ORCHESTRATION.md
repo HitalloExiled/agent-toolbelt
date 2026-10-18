@@ -23,7 +23,7 @@ cd /home/rafael.franca/Projetos/My/agent-toolbelt/sandbox
   --prompt "<task>" \
   [--model <ref>] \
   [--copy-in <host-path>]... \
-  [--timeout 1800] [--sealed]
+  [--timeout 1800] [--sealed] [--detach]
 ```
 
 `opencode-sandboxed task …` (alias `opencode-sb task …`) is equivalent when
@@ -31,10 +31,13 @@ the global CLI is installed (it execs `run.sh task`), and works from any
 directory.
 
 - **Blocking**: the command returns when the task finishes (or times out).
+  With `--detach` it prints the run id and returns immediately — then poll it
+  with `peek` (see *Monitoring a run*).
 - **Exit code**: `0` = success, `124` = timeout, other = failure.
 - **Artifacts** in `runs/<run-id>/`:
   - `result.json` — the task's final answer/JSON; read this first.
   - `hostout` — path of the host output dir for this run.
+  - `exit` — the run's exit code, written last when it finishes.
   - `proxy.log` — audit of every internet request (domains, URLs).
   - `stderr.log` — OpenCode logs.
 - **Host output** (always): whatever the sandbox wrote to `/workspace/out` is in
@@ -66,6 +69,26 @@ directory.
   anything under that prefix and there is no disk quota. You cannot choose the
   path (only the human sets `SANDBOX_OUT_ROOT`); keep it a dedicated scratch
   location, never a project tree or system path.
+
+## Monitoring a run
+
+Do **not** stream a run's full transcript into your own context — it grows
+without bound and will flood you. Poll the bounded **peek** instead:
+
+```bash
+runid=$(opencode-sb task --detach --prompt "…" 2>/dev/null | awk '/^run /{print $2}')
+
+opencode-sb peek "$runid"        # status + only the last 12 messages
+opencode-sb peek "$runid" -n 4   # tighter window
+opencode-sb peek                 # newest running run, if you lost the id
+```
+
+`peek` returns a small, fixed block: the run status (running + last-activity, or
+finished + exit code), the last N messages (tool calls and assistant text, each
+truncated), and the output files. Poll as often as you like.
+
+Reserve `opencode-sb watch <run-id>` for a **human** — it follows the full live
+transcript until the run ends. Don't call it from the host agent.
 
 ## Choosing isolation
 
@@ -101,3 +124,5 @@ Session state lives in the container's tmpfs until `opencode-sb down`.
   `--copy-in` (in) and `SANDBOX_OUT_ROOT/<run-id>/` (out, set by the human).
 - Point the output prefix at a precious tree — it is a rw mount the sandbox can
   clobber.
+- Stream a run with `watch` (or `tail` its `result.json`) into your own context —
+  use the bounded `peek`.

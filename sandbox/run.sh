@@ -3,13 +3,15 @@
 # run.sh — orchestrate sandboxed OpenCode tasks in hardened, ephemeral containers.
 #
 #   ./run.sh task  --prompt "..." [options]   run one sandboxed task
+#   ./run.sh watch [<run-id>]                  follow a run's full live transcript
+#   ./run.sh peek  [<run-id>] [-n N]           bounded snapshot: last N messages
 #   ./run.sh up                                start a long-lived session container
 #   ./run.sh down                              stop and remove the session container
 #   ./run.sh logs  <run-id>                    show the egress proxy log of a run
 #   ./run.sh models [--check]                  list the sandbox model catalog
 #   ./run.sh clean                             remove orphaned sandbox/proxy containers
 #
-# Artifacts: runs/<run-id>/ (result.json, stderr.log, proxy.log)
+# Artifacts: runs/<run-id>/ (result.json, stderr.log, proxy.log, exit)
 # Host output: SANDBOX_OUT_ROOT/<run-id>/ (default ~/.sandbox), mounted rw at
 #              /workspace/out — a fixed prefix, never chosen by the caller.
 set -euo pipefail
@@ -54,6 +56,8 @@ usage() {
   cat <<'EOF'
 Usage:
   ./run.sh task --prompt "..." [options]     run one sandboxed task
+  ./run.sh watch [<run-id>]                  follow a run's full live transcript
+  ./run.sh peek  [<run-id>] [-n N]           bounded snapshot: last N messages (default 12)
   ./run.sh up                                start a long-lived session container
   ./run.sh down                              stop and remove the session container
   ./run.sh logs <run-id>                     show the egress proxy log of a run
@@ -70,6 +74,8 @@ task options:
   --mem SIZE            memory limit (default 8g)
   --timeout SECS        hard timeout (default 1800)
   --sealed              no internet at all (internal-only network)
+  --follow/--no-follow  relay the agent's live transcript (default: on a TTY)
+  --detach, -d          return immediately; follow later with `watch <run-id>`
   --strict              fail if --model is not in the sandbox catalog
   --rebuild             rebuild the worker/proxy images before running
 
@@ -437,7 +443,9 @@ session_exists() { # a session container in any state
 }
 
 cmd_task() {
+  local -a orig_args=("$@")
   local prompt="" prompt_file="" model="" title="" sealed=0 src strict="${STRICT:-0}"
+  local detach=0
   local copy_in=()
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -451,6 +459,9 @@ cmd_task() {
       --timeout)     TIMEOUT="${2:?}"; shift 2 ;;
       --sealed)      sealed=1; shift ;;
       --strict)      strict=1; shift ;;
+      --follow)      SANDBOX_FOLLOW=1; shift ;;
+      --no-follow)   SANDBOX_FOLLOW=0; shift ;;
+      --detach|-d)   detach=1; shift ;;
       --rebuild)     REBUILD=1; shift ;;
       *) log "unknown option for 'task': $1"; usage; exit 2 ;;
     esac
@@ -463,6 +474,21 @@ cmd_task() {
     log "error: no prompt given (use --prompt or --prompt-file)"
     usage
     exit 2
+  fi
+
+  # Detached: hand off to a background copy of ourselves with a pre-seeded run
+  # id, so the caller gets the id immediately and can follow with `watch`. The
+  # child re-runs the same args but sees SANDBOX_RUNID set, so it skips this.
+  if [ "$detach" = 1 ] && [ -z "${SANDBOX_RUNID:-}" ]; then
+    local runid="run-$(date -u +%Y%m%dT%H%M%SZ)-$RANDOM"
+    mkdir -p "$RUNS_DIR/$runid"
+    SANDBOX_RUNID="$runid" SANDBOX_FOLLOW=0 SANDBOX_DETACHED=1 \
+      setsid nohup "$ROOT/run.sh" task "${orig_args[@]}" \
+      > "$RUNS_DIR/$runid/bootstrap.log" 2>&1 &
+    printf 'run %s\n' "$runid"
+    log "detached: $runid (bootstrap log: runs/$runid/bootstrap.log)"
+    log "  follow : opencode-sb watch $runid"
+    exit 0
   fi
 
   require_docker
@@ -500,7 +526,7 @@ cmd_task() {
     fi
   fi
 
-  local runid="run-$(date -u +%Y%m%dT%H%M%SZ)-$RANDOM"
+  local runid="${SANDBOX_RUNID:-run-$(date -u +%Y%m%dT%H%M%SZ)-$RANDOM}"
   local sandbox="sandbox-$runid"
   local net="$NETWORK" proxy_name="" conf=""
   local run_dir="$RUNS_DIR/$runid"
@@ -511,6 +537,7 @@ cmd_task() {
   out_root="$(prepare_out_root)"
   out_dir="$out_root/$runid"
   mkdir -p "$out_dir"
+  log "run: $runid (follow: opencode-sb watch $runid)"
 
   cleanup_task() {
     # :- guards: the EXIT trap may fire after function locals are gone.
@@ -576,11 +603,34 @@ cmd_task() {
   if [ -n "$title" ]; then run_args+=(--title "$title"); fi
   run_args+=("$prompt")
 
-  log "task $runid: model=${model:-config-default} cpus=$CPUS mem=$MEM timeout=${TIMEOUT}s sealed=${sealed}"
+  # Live transcript relay: default on when stderr is a terminal, so a human
+  # watches the agent think; off for scripted/detached runs. The raw JSON event
+  # stream is still written verbatim to result.json (via tee).
+  local follow="${SANDBOX_FOLLOW:-auto}"
+  case "$follow" in
+    1|0) ;;
+    *) if [ -t 2 ]; then follow=1; else follow=0; fi ;;
+  esac
+  if [ "$follow" = 1 ] && ! command -v python3 >/dev/null 2>&1; then
+    log "note: python3 not found; live transcript disabled (files are still written)"
+    follow=0
+  fi
+
+  log "task $runid: model=${model:-config-default} cpus=$CPUS mem=$MEM timeout=${TIMEOUT}s sealed=${sealed}$([ "$follow" = 1 ] && echo ' follow=on')"
   local rc=0
   # timeout runs inside the container so the remote process is actually killed.
-  docker exec "$sandbox" timeout -s TERM -k 30 "$TIMEOUT" opencode "${run_args[@]}" \
-    > "$run_dir/result.json" 2> "$run_dir/stderr.log" || rc=$?
+  if [ "$follow" = 1 ]; then
+    set +e
+    docker exec "$sandbox" timeout -s TERM -k 30 "$TIMEOUT" opencode "${run_args[@]}" \
+      2> "$run_dir/stderr.log" \
+      | tee "$run_dir/result.json" \
+      | python3 -u "$ROOT/journal.py" render >&2
+    rc="${PIPESTATUS[0]}"
+    set -e
+  else
+    docker exec "$sandbox" timeout -s TERM -k 30 "$TIMEOUT" opencode "${run_args[@]}" \
+      > "$run_dir/result.json" 2> "$run_dir/stderr.log" || rc=$?
+  fi
 
   # Record where the host output lives (the fixed prefix), for tooling.
   printf '%s\n' "$out_dir" > "$run_dir/hostout"
@@ -602,6 +652,9 @@ cmd_task() {
   log "  stderr : $run_dir/stderr.log"
   log "  out    : $out_dir/ (host)"
   if [ -f "$run_dir/proxy.log" ]; then log "  proxy  : $run_dir/proxy.log"; fi
+  # The `exit` marker is written last: `watch` follows it, and `peek` reads it
+  # to report completion (rather than racing the container teardown).
+  printf '%s\n' "$rc" > "$run_dir/exit"
   exit "$rc"
 }
 
@@ -694,6 +747,63 @@ cmd_logs() {
   cat "$f"
 }
 
+# Resolve a run id: an explicit one, else the newest still-running run, else
+# the newest finished run. Prints the run id (status notes go to stderr).
+resolve_run() {
+  local arg="${1:-}" rid running
+  if [ -n "$arg" ]; then printf '%s' "$arg"; return 0; fi
+  running="$(docker ps --format '{{.Names}}' 2>/dev/null | sed -n 's/^sandbox-//p')"
+  rid="$(ls -td "$RUNS_DIR"/run-* 2>/dev/null | while read -r d; do
+           b="${d##*/}"
+           printf '%s\n' "$running" | grep -qx "$b" && { printf '%s' "$b"; break; }
+         done)"
+  if [ -z "$rid" ]; then
+    rid="$(ls -td "$RUNS_DIR"/run-* 2>/dev/null | head -1)"
+    rid="${rid##*/}"
+    [ -n "$rid" ] && log "note: no running run; using the newest finished run ($rid)"
+  fi
+  printf '%s' "$rid"
+}
+
+cmd_watch() {
+  local runid dir
+  runid="$(resolve_run "${1:-}")"
+  if [ -z "$runid" ]; then log "no runs in $RUNS_DIR"; exit 1; fi
+  dir="$RUNS_DIR/$runid"
+  [ -d "$dir" ] || { log "unknown run: $runid"; exit 2; }
+  if ! command -v python3 >/dev/null 2>&1; then
+    log "python3 not found; falling back to a raw tail of result.json"
+    exec tail -f "$dir/result.json"
+  fi
+  exec python3 -u "$ROOT/journal.py" watch "$dir"
+}
+
+# Bounded snapshot for a host agent: status + only the last N messages, so a
+# peek never pulls the whole transcript into the caller's context.
+cmd_peek() {
+  local runid="" limit=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      -n|--lines) limit="${2:?}"; shift 2 ;;
+      -*) log "unknown option for 'peek': $1"; exit 2 ;;
+      *) runid="$1"; shift ;;
+    esac
+  done
+  runid="$(resolve_run "$runid")"
+  if [ -z "$runid" ]; then log "no runs in $RUNS_DIR"; exit 1; fi
+  local dir="$RUNS_DIR/$runid"
+  [ -d "$dir" ] || { log "unknown run: $runid"; exit 2; }
+  command -v python3 >/dev/null 2>&1 || { log "python3 not found; cannot peek"; exit 1; }
+  # Prefer the `exit` marker; only fall back to the container state (which lets
+  # pre-marker runs and crashed runs read as finished).
+  local state=""
+  if [ ! -f "$dir/exit" ]; then
+    docker ps --format '{{.Names}}' 2>/dev/null | grep -qx "sandbox-$runid" \
+      && state="running" || state="done"
+  fi
+  exec python3 -u "$ROOT/journal.py" peek "$dir" "$limit" "$state"
+}
+
 cmd_clean() {
   local names
   names="$(docker ps -a --format '{{.Names}}' 2>/dev/null \
@@ -711,6 +821,8 @@ case "${1:-help}" in
   task)  shift; cmd_task "$@" ;;
   up)    cmd_up ;;
   down)  cmd_down ;;
+  watch) shift; cmd_watch "$@" ;;
+  peek)  shift; cmd_peek "$@" ;;
   logs)  shift; cmd_logs "$@" ;;
   models) shift; cmd_models "$@" ;;
   clean) cmd_clean ;;

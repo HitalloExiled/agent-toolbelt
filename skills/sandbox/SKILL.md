@@ -26,14 +26,33 @@ Project: this repo's `sandbox/` dir — `sandbox/README.md` and `sandbox/ORCHEST
 Equivalent on the terminal:
 
 ```bash
-opencode-sb task --model  --timeout 1800 \
-  --prompt "<self-contained task>" [--copy-in <host-path>]... [--sealed]
+opencode-sb task --model <ref> --timeout 1800 \
+  --prompt "<self-contained task>" [--copy-in <host-path>]... [--sealed] [--detach]
 ```
 
 - **Blocking**: returns when the task finishes or the `--timeout` is reached.
+  With `--detach` it prints the run id and returns at once (poll it with `peek`).
 - **Exit code**: `0` success, `124` timeout (inconclusive), other = failure.
 - **Model**: see **Model selection** below — prefer free, fall back to local.
 - From a sandboxed shell, export `DOCKER_HOST=unix:///var/run/docker.sock` (the tools do this automatically).
+
+### Monitoring a long run — `peek`, never `watch`
+
+Do **not** pull a run's full transcript into your context: it is unbounded and
+will flood you. Start detached and poll a bounded peek:
+
+```bash
+runid=$(opencode-sb task --detach --prompt "…" 2>/dev/null | awk '/^run /{print $2}')
+
+opencode-sb peek "$runid"        # status + last 12 messages (each truncated)
+opencode-sb peek "$runid" -n 4   # tighter window
+opencode-sb peek                 # newest running run, if you lost the id
+```
+
+`peek` returns a small, fixed block: status (running + last-activity, or finished
++ exit code), the last N messages, and the output files. `opencode-sb watch
+<run-id>` follows the **full** live transcript until the run ends — that is for
+the human, not you.
 
 ### Interactive session (iterative work)
 
@@ -80,6 +99,7 @@ In `sandbox/runs/<run-id>/` (repo `agent-toolbelt`):
 |---|---|
 | `result.json` | execution events as JSON (stream); the **final answer** is in the last event — `sandbox_run` extracts and returns it |
 | `hostout` | path of the host output dir for this run (`SANDBOX_OUT_ROOT/<run-id>`) |
+| `exit` | the run's exit code, written last when it finishes |
 | `proxy.log` | audit of **all** internet requests (domain/URL). **Does not exist in `--sealed`** |
 | `stderr.log` | OpenCode logs in the sandbox |
 
@@ -105,6 +125,7 @@ After any task, read the final answer and **review the network with `sandbox_log
 - Never pass host secrets (tokens, credentials, `~/.config` beyond the generated provider config) into prompts or `copy_in`.
 - Don't assume `/workspace` persists across tasks — each `task` is fresh.
 - Never mount host paths yourself: the only surfaces are `copy_in` (input) and the fixed output prefix `SANDBOX_OUT_ROOT/<run-id>/` (output, set by the human via the environment).
+- Never stream a run with `watch` (or `tail` its `result.json`) into your context — use the bounded `peek`.
 - Don't trust untrusted code/files without first running `--sealed` and reviewing output and log.
 
 ## Examples
