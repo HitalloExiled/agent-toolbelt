@@ -3,14 +3,15 @@
 # run.sh — orchestrate sandboxed OpenCode tasks in hardened, ephemeral containers.
 #
 #   ./run.sh task  --prompt "..." [options]   run one sandboxed task
-#   ./run.sh up    [--out-dir DIR]             start a long-lived session container
+#   ./run.sh up                                start a long-lived session container
 #   ./run.sh down                              stop and remove the session container
 #   ./run.sh logs  <run-id>                    show the egress proxy log of a run
 #   ./run.sh models [--check]                  list the sandbox model catalog
 #   ./run.sh clean                             remove orphaned sandbox/proxy containers
 #
-# Artifacts land in runs/<run-id>/: result.json, stderr.log, proxy.log, out/
-# --out-dir DIR bind-mounts DIR rw at /workspace/out (scratch escape hatch).
+# Artifacts: runs/<run-id>/ (result.json, stderr.log, proxy.log)
+# Host output: SANDBOX_OUT_ROOT/<run-id>/ (default ~/.sandbox), mounted rw at
+#              /workspace/out — a fixed prefix, never chosen by the caller.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -53,7 +54,7 @@ usage() {
   cat <<'EOF'
 Usage:
   ./run.sh task --prompt "..." [options]     run one sandboxed task
-  ./run.sh up [--out-dir DIR]                start a long-lived session container
+  ./run.sh up                                start a long-lived session container
   ./run.sh down                              stop and remove the session container
   ./run.sh logs <run-id>                     show the egress proxy log of a run
   ./run.sh models [--check]                  list the sandbox model catalog (--check validates)
@@ -63,7 +64,6 @@ task options:
   --prompt TEXT         task prompt for the sandboxed agent
   --prompt-file FILE|-  read the prompt from a file ('-' = stdin)
   --copy-in PATH        copy a host file/dir into /workspace (repeatable)
-  --out-dir DIR         bind DIR rw at /workspace/out (scratch escape hatch)
   --model REF           model ref (default: free online, local for --sealed)
   --title TEXT          session title
   --cpus N              CPU limit (default 4)
@@ -73,7 +73,9 @@ task options:
   --strict              fail if --model is not in the sandbox catalog
   --rebuild             rebuild the worker/proxy images before running
 
-Environment: CPUS, MEM, TIMEOUT, OPENCODE_HOST_CONFIG, REBUILD
+Environment: CPUS, MEM, TIMEOUT, OPENCODE_HOST_CONFIG, REBUILD, SANDBOX_OUT_ROOT
+  Sandbox output lands in SANDBOX_OUT_ROOT/<run-id>/ (default ~/.sandbox),
+  bind-mounted rw at /workspace/out. The prefix is fixed by the human only.
   Model preferences live in models.conf (ordered; first available wins).
   DOCKER_HOST must point at the machine daemon (from a sandboxed shell:
   export DOCKER_HOST=unix:///var/run/docker.sock).
@@ -398,23 +400,32 @@ worker_env() { # $1 = proxy name (empty for sealed)
   printf '%s\n' "${env[@]}"
 }
 
-# Validate and canonicalize a host directory to bind-mount rw at /workspace/out
-# (the escape hatch). It is a SCRATCH space — treat it as a tmp: the sandbox
-# (untrusted code) can write/overwrite/delete anything inside it, there is no
-# overwrite protection and no disk quota. Only point it at a disposable dir,
-# never a system path or a precious tree. Docker creates a missing source dir
-# as root (unwritable by the sandbox), so we create it ourselves as the user.
-prepare_out_dir() { # $1 = host dir (relative or absolute) -> prints canonical path
-  local d="$1"
-  mkdir -p "$d" || { log "error: cannot create --out-dir '$d'"; exit 2; }
-  d="$(cd "$d" && pwd -P)" || { log "error: cannot resolve --out-dir '$1'"; exit 2; }
-  case "$d" in
+# Resolve the FIXED host output root. The sandbox always writes its
+# /workspace/out here, under <run-id>/ (tasks) or session/ (interactive). This
+# is NOT the caller's choice: only the human sets the root, via the environment
+# (SANDBOX_OUT_ROOT, default ~/.sandbox). A fallback keeps runs working where
+# the preferred root cannot be created (e.g. the OpenCode agent shell, where
+# $HOME's own root is read-only); dangerous roots are refused.
+#
+# The mounted dir is a real rw host mount: the untrusted sandbox can
+# write/overwrite/delete anything under it, with no quota — which is why the
+# path is fixed and never taken from the task caller.
+prepare_out_root() {
+  local root="${SANDBOX_OUT_ROOT:-$HOME/.sandbox}"
+  if ! mkdir -p "$root" 2>/dev/null; then
+    log "warning: cannot create SANDBOX_OUT_ROOT='$root' (read-only here?)"
+    root="$RUNS_DIR/host"
+    log "         falling back to $root — set SANDBOX_OUT_ROOT to choose the prefix"
+    mkdir -p "$root" || { log "error: cannot create fallback root '$root'"; exit 2; }
+  fi
+  root="$(cd "$root" && pwd -P)" || { log "error: cannot resolve output root"; exit 2; }
+  case "$root" in
     /|/home|/etc|/usr|/var|/boot|/root|/proc|/sys|/dev|/run|/bin|/sbin|/lib|/lib64|"$HOME")
-      log "error: refusing to bind-mount '$d' rw; point --out-dir at a scratch subdir"
+      log "error: refusing SANDBOX_OUT_ROOT='$root' (pick a dedicated subdir)"
       exit 2 ;;
   esac
-  [ -w "$d" ] || { log "error: --out-dir '$d' is not writable"; exit 2; }
-  printf '%s' "$d"
+  [ -w "$root" ] || { log "error: output root '$root' is not writable"; exit 2; }
+  printf '%s' "$root"
 }
 
 session_running() { # a running session container (docker ps lists running only)
@@ -427,7 +438,6 @@ session_exists() { # a session container in any state
 
 cmd_task() {
   local prompt="" prompt_file="" model="" title="" sealed=0 src strict="${STRICT:-0}"
-  local out_dir=""
   local copy_in=()
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -436,7 +446,6 @@ cmd_task() {
       --copy-in)     copy_in+=("${2:?}"); shift 2 ;;
       --model)       model="${2:?}"; shift 2 ;;
       --title)       title="${2:?}"; shift 2 ;;
-      --out-dir)     out_dir="${2:?}"; shift 2 ;;
       --cpus)        CPUS="${2:?}"; shift 2 ;;
       --mem)         MEM="${2:?}"; shift 2 ;;
       --timeout)     TIMEOUT="${2:?}"; shift 2 ;;
@@ -491,13 +500,17 @@ cmd_task() {
     fi
   fi
 
-  if [ -n "$out_dir" ]; then out_dir="$(prepare_out_dir "$out_dir")"; fi
-
   local runid="run-$(date -u +%Y%m%dT%H%M%SZ)-$RANDOM"
   local sandbox="sandbox-$runid"
   local net="$NETWORK" proxy_name="" conf=""
   local run_dir="$RUNS_DIR/$runid"
   mkdir -p "$run_dir/config"
+
+  # Fixed host output prefix (never caller-chosen).
+  local out_root out_dir
+  out_root="$(prepare_out_root)"
+  out_dir="$out_root/$runid"
+  mkdir -p "$out_dir"
 
   cleanup_task() {
     # :- guards: the EXIT trap may fire after function locals are gone.
@@ -526,11 +539,10 @@ cmd_task() {
   create_flags="$(worker_create_flags "$net")"
   env="$(worker_env "$proxy_name")"
 
-  # Escape hatch: bind a host dir rw at /workspace/out so the sandbox's
-  # deliverables land on the host directly (instead of the collected
-  # runs/<id>/out copy). Scratch semantics — see prepare_out_dir.
-  local -a mount_flags=()
-  if [ -n "$out_dir" ]; then mount_flags+=(-v "$out_dir:/workspace/out:rw"); fi
+  # /workspace/out is bind-mounted to the fixed host prefix, so the sandbox's
+  # deliverables land on the host directly (nothing is collected into
+  # runs/<id>/out).
+  local -a mount_flags=(-v "$out_dir:/workspace/out:rw")
 
   # NOTE: --entrypoint overrides the image ENTRYPOINT (opencode); without it
   # `sleep infinity` would run as `opencode sleep infinity`. The container
@@ -570,11 +582,8 @@ cmd_task() {
   docker exec "$sandbox" timeout -s TERM -k 30 "$TIMEOUT" opencode "${run_args[@]}" \
     > "$run_dir/result.json" 2> "$run_dir/stderr.log" || rc=$?
 
-  # Collect /workspace/out unless it is the host escape hatch (then the files
-  # are already on the host — copying would duplicate them).
-  if [ -z "$out_dir" ] && container_has "$sandbox" /workspace/out; then
-    stream_dir_out "$sandbox" /workspace/out "$run_dir"
-  fi
+  # Record where the host output lives (the fixed prefix), for tooling.
+  printf '%s\n' "$out_dir" > "$run_dir/hostout"
 
   if [ -n "$proxy_name" ]; then
     if container_has "$proxy_name" /var/log/tinyproxy.log; then
@@ -591,25 +600,21 @@ cmd_task() {
   log "task $runid finished (exit $rc)"
   log "  result : $run_dir/result.json"
   log "  stderr : $run_dir/stderr.log"
-  if [ -n "$out_dir" ]; then log "  out    : $out_dir/ (rw escape hatch — scratch, no quota)"; fi
-  if [ -d "$run_dir/out" ]; then log "  output : $run_dir/out/"; fi
+  log "  out    : $out_dir/ (host)"
   if [ -f "$run_dir/proxy.log" ]; then log "  proxy  : $run_dir/proxy.log"; fi
   exit "$rc"
 }
 
 cmd_up() {
-  local out_dir=""
-  while [ $# -gt 0 ]; do
-    case "$1" in
-      --out-dir) out_dir="${2:?}"; shift 2 ;;
-      *) log "unknown option for 'up': $1"; usage; exit 2 ;;
-    esac
-  done
-
   require_docker
   build_images
   ensure_network "$NETWORK" internal
-  if [ -n "$out_dir" ]; then out_dir="$(prepare_out_dir "$out_dir")"; fi
+
+  # Fixed host output prefix for the session (never caller-chosen).
+  local out_root out_dir
+  out_root="$(prepare_out_root)"
+  out_dir="$out_root/session"
+  mkdir -p "$out_dir"
 
   local conf cfgdir
   cfgdir="$RUNS_DIR/_session/config"
@@ -632,9 +637,6 @@ cmd_up() {
     fi
     log "session $SESSION already running"
     log "  attach: opencode-sandboxed   (or: docker exec -it $SESSION opencode)"
-    if [ -n "$out_dir" ]; then
-      log "note: --out-dir applies only to a newly created session; run 'opencode-sb down' first"
-    fi
     return 0
   fi
 
@@ -654,9 +656,8 @@ cmd_up() {
   create_flags="$(worker_create_flags "$NETWORK")"
   env="$(worker_env "$SESSION_PROXY")"
 
-  # Escape hatch: bind a host dir rw at /workspace/out (see prepare_out_dir).
-  local -a mount_flags=()
-  if [ -n "$out_dir" ]; then mount_flags+=(-v "$out_dir:/workspace/out:rw"); fi
+  # /workspace/out is bind-mounted to the fixed host prefix.
+  local -a mount_flags=(-v "$out_dir:/workspace/out:rw")
 
   # NOTE: --entrypoint overrides the image ENTRYPOINT (see cmd_task).
   # shellcheck disable=SC2086
@@ -671,7 +672,7 @@ cmd_up() {
   stream_file_into "$SESSION" "$cfgdir/opencode.jsonc" "$SESSION_CONFIG"
 
   log "session up: $SESSION"
-  if [ -n "$out_dir" ]; then log "  out-dir: $out_dir/ (rw escape hatch — scratch, no quota)"; fi
+  log "  out   : $out_dir/ (host)"
   log "  interactive : opencode-sandboxed   (or: docker exec -it $SESSION opencode)"
   log "  one-shot    : docker exec $SESSION opencode run --standalone --auto \"message\""
 }
@@ -708,7 +709,7 @@ cmd_clean() {
 
 case "${1:-help}" in
   task)  shift; cmd_task "$@" ;;
-  up)    shift; cmd_up "$@" ;;
+  up)    cmd_up ;;
   down)  cmd_down ;;
   logs)  shift; cmd_logs "$@" ;;
   models) shift; cmd_models "$@" ;;

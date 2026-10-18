@@ -4,7 +4,7 @@
 #
 #   opencode-sandboxed                      enter the OpenCode TUI (auto-starts)
 #   opencode-sandboxed run MSG...           send one message, print the reply
-#   opencode-sandboxed up [--out-dir D] / down   start / stop the session container
+#   opencode-sandboxed up / down            start / stop the session container
 #   opencode-sandboxed status               show session, proxy and relay status
 #   opencode-sandboxed logs [RUN-ID]        tail session egress log, or a run log
 #   opencode-sandboxed task [OPTIONS]       run a one-shot sandboxed task
@@ -15,7 +15,6 @@
 #   --prompt TEXT | --prompt-file FILE|-
 #   --copy-in PATH (repeatable)   --model REF   --title TEXT
 #   --cpus N   --mem SIZE   --timeout SECS   --sealed
-#   --out-dir DIR (bind DIR rw at /workspace/out — scratch escape hatch)
 #   --strict (fail on an unknown --model)   --rebuild (rebuild images first)
 set -euo pipefail
 
@@ -100,7 +99,7 @@ case "$cmd" in
     exec docker logs -f "$SESSION_PROXY"
     ;;
   help|-h|--help)
-    sed -n '3,19p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '3,18p' "$0" | sed 's/^# \{0,1\}//'
     ;;
   *)
     echo "unknown command: $cmd" >&2

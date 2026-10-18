@@ -1,6 +1,6 @@
 ---
 name: sandbox
-description: Disposable Docker sandbox to delegate risky work. Use ALWAYS when a task could affect system stability (touching packages, services, kernel, /etc, disks, permissions), executing untrusted code/scripts/dependencies, running destructive or uncertain commands, processing potentially malicious files, or consulting/downloading dubious internet sources. The sandbox does not see the host filesystem (input only via copy_in, output only via /workspace/out) and internet goes through a logging proxy, or is cut with sealed. You (host) act as orchestrator via tools `sandbox_run`/`sandbox_logs`/`sandbox_status` or the global CLI `opencode-sb`. Do not use for simple read-only questions you answer locally.
+description: Disposable Docker sandbox to delegate risky work. Use ALWAYS when a task could affect system stability (touching packages, services, kernel, /etc, disks, permissions), executing untrusted code/scripts/dependencies, running destructive or uncertain commands, processing potentially malicious files, or consulting/downloading dubious internet sources. The sandbox sees no host files as input (only copy_in) and writes output only through /workspace/out, which lands in a fixed human-set host prefix (SANDBOX_OUT_ROOT); internet goes through a logging proxy, or is cut with sealed. You (host) act as orchestrator via tools `sandbox_run`/`sandbox_logs`/`sandbox_status` or the global CLI `opencode-sb`. Do not use for simple read-only questions you answer locally.
 metadata:
   audience: any
   opencode/slash: "true"
@@ -8,7 +8,7 @@ metadata:
 
 ## What it is
 
-`opencode-sandbox` runs an ephemeral OpenCode instance inside a disposable Docker container. You delegate the task and it runs isolated from the host: **no access to your filesystem** by default, no docker.sock, no capabilities, egress network controlled. It's for doing the dirty work away from the real machine.
+`opencode-sandbox` runs an ephemeral OpenCode instance inside a disposable Docker container. You delegate the task and it runs isolated from the host: **no host files as input** (only `copy_in`), no docker.sock, no capabilities, egress network controlled. Whatever it writes to `/workspace/out` lands in a **fixed, human-set host prefix** (`SANDBOX_OUT_ROOT`, default `~/.sandbox`). It's for doing the dirty work away from the real machine.
 
 Global CLI: `opencode-sb` (alias of `opencode-sandboxed`).
 Project: this repo's `sandbox/` dir — `sandbox/README.md` and `sandbox/ORCHESTRATION.md` for full reference.
@@ -79,7 +79,7 @@ In `sandbox/runs/<run-id>/` (repo `agent-toolbelt`):
 | File | What it is |
 |---|---|
 | `result.json` | execution events as JSON (stream); the **final answer** is in the last event — `sandbox_run` extracts and returns it |
-| `out/` | files written to `/workspace/out` (only output channel) |
+| `hostout` | path of the host output dir for this run (`SANDBOX_OUT_ROOT/<run-id>`) |
 | `proxy.log` | audit of **all** internet requests (domain/URL). **Does not exist in `--sealed`** |
 | `stderr.log` | OpenCode logs in the sandbox |
 
@@ -87,8 +87,8 @@ In `sandbox/runs/<run-id>/` (repo `agent-toolbelt`):
 
 - The agent starts with `/workspace` **empty** and cannot see the host. Make the prompt self-contained.
 - To pass files, use `copy_in` / `--copy-in` (repeatable) — they land in `/workspace/<name>`.
-- Tell the agent to **write the deliverable to `/workspace/out/`**.
-- To land files **directly on the host**, pass `out_dir` / `--out-dir <dir>` (bind-mounted **rw** at `/workspace/out`). It is a **scratch/tmp** space — the untrusted agent can write/overwrite/delete anything in it, with no quota — so only ever point it at a disposable dir.
+- Tell the agent to **write the deliverable to `/workspace/out/`** — that always lands on the host, in the fixed prefix `SANDBOX_OUT_ROOT/<run-id>/` (default `~/.sandbox`). `sandbox_run` reports that dir (`hostout`).
+- The prefix is **human-set** (`SANDBOX_OUT_ROOT`); you cannot choose it. It is a real **rw** host mount the untrusted agent can write/overwrite/delete, with no quota.
 - Long prompts: `--prompt-file file` (or `--prompt-file -` for stdin).
 
 ## Audit (mandatory before trusting)
@@ -98,14 +98,13 @@ After any task, read the final answer and **review the network with `sandbox_log
 ## When NOT to use
 
 - Read-only questions you can answer locally (docs, existing code).
-- Tasks that actually need to touch host files/state — in that case tell the user; the lack of shared surface is intentional.
+- Tasks that actually need to read/write host files beyond the fixed output prefix — tell the user; input is `copy_in`-only, by design.
 
 ## Never
 
 - Never pass host secrets (tokens, credentials, `~/.config` beyond the generated provider config) into prompts or `copy_in`.
 - Don't assume `/workspace` persists across tasks — each `task` is fresh.
-- Never point `out_dir` / `--out-dir` at anything but a disposable scratch dir — it is a real rw host mount.
-- Otherwise never mount host paths: the only surface is `copy_in` (input) and `out/` (output).
+- Never mount host paths yourself: the only surfaces are `copy_in` (input) and the fixed output prefix `SANDBOX_OUT_ROOT/<run-id>/` (output, set by the human via the environment).
 - Don't trust untrusted code/files without first running `--sealed` and reviewing output and log.
 
 ## Examples

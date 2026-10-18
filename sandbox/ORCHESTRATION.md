@@ -23,7 +23,6 @@ cd /home/rafael.franca/Projetos/My/agent-toolbelt/sandbox
   --prompt "<task>" \
   [--model <ref>] \
   [--copy-in <host-path>]... \
-  [--out-dir <host-scratch-dir>] \
   [--timeout 1800] [--sealed]
 ```
 
@@ -35,9 +34,13 @@ directory.
 - **Exit code**: `0` = success, `124` = timeout, other = failure.
 - **Artifacts** in `runs/<run-id>/`:
   - `result.json` — the task's final answer/JSON; read this first.
-  - `out/` — files the sandbox agent wrote to `/workspace/out`.
+  - `hostout` — path of the host output dir for this run.
   - `proxy.log` — audit of every internet request (domains, URLs).
   - `stderr.log` — OpenCode logs.
+- **Host output** (always): whatever the sandbox wrote to `/workspace/out` is in
+  the dir named by `hostout` — `SANDBOX_OUT_ROOT/<run-id>/` (default
+  `~/.sandbox`). The prefix is set by the human via `SANDBOX_OUT_ROOT`; a task
+  caller cannot choose it (falls back to `runs/host/` if uncreatable).
 
 ## Prompt rules
 
@@ -45,8 +48,9 @@ directory.
   host filesystem. Make the prompt self-contained.
 - If the task needs input files, pass them explicitly:
   `--copy-in /path/to/file` (repeatable). They land in `/workspace/<name>`.
-- Instruct the agent to write deliverables to `/workspace/out/` — that is the
-  only channel results come back through.
+- Instruct the agent to write deliverables to `/workspace/out/` — that always
+  lands on the host, in the fixed prefix (`SANDBOX_OUT_ROOT/<run-id>/`), and is
+  the only channel results come back through.
 - Long prompts: write them to a temp file and use `--prompt-file <file>`
   (`--prompt-file -` reads stdin).
 - **Model selection.** Prefer the free provider, fall back to local: most tasks
@@ -56,12 +60,12 @@ directory.
   `--model` is omitted the sandbox picks a mode-aware default (free online,
   `single192` for `--sealed`). The catalog changes between OpenCode releases —
   validate the preferred refs with `opencode-sb models --check`.
-- **Getting files back onto the host.** By default read `runs/<run-id>/out/`.
-  To have the sandbox write straight into a host dir, pass
-  `--out-dir <host-dir>` (bind-mounted **rw** at `/workspace/out`). It is a
-  **scratch/tmp** space: the untrusted agent can write/overwrite/delete anything
-  in it and there is no disk quota — only ever point it at a disposable dir,
-  never a project tree or a system path.
+- **Getting files back onto the host.** Always read the dir named by
+  `runs/<run-id>/hostout` (`SANDBOX_OUT_ROOT/<run-id>/`, default `~/.sandbox`).
+  It is a **real rw host mount**: the untrusted agent can write/overwrite/delete
+  anything under that prefix and there is no disk quota. You cannot choose the
+  path (only the human sets `SANDBOX_OUT_ROOT`); keep it a dedicated scratch
+  location, never a project tree or system path.
 
 ## Choosing isolation
 
@@ -93,7 +97,7 @@ Session state lives in the container's tmpfs until `opencode-sb down`.
 - Pass host secrets (API tokens, `~/.config` contents beyond the generated
   provider config, credentials) into prompts or `--copy-in`.
 - Assume `/workspace` contents persist across tasks — each `task` run is fresh.
-- Point `--out-dir` at anything but a disposable scratch dir — it is a rw mount
-  of real host space, and the sandbox can clobber whatever is there.
-- Otherwise mount host paths: the only shared surfaces are `--copy-in` (in),
-  `out/` (out), and the opt-in `--out-dir` scratch.
+- Mount host paths other than the fixed output prefix: the shared surfaces are
+  `--copy-in` (in) and `SANDBOX_OUT_ROOT/<run-id>/` (out, set by the human).
+- Point the output prefix at a precious tree — it is a rw mount the sandbox can
+  clobber.

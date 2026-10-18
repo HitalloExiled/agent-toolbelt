@@ -2,9 +2,9 @@
 
 Run [OpenCode](https://opencode.ai) tasks in hardened, ephemeral Docker containers.
 A host-side OpenCode agent (or a human) orchestrates tasks; each task runs in its
-own throwaway container with no access to host files and all internet traffic
-funneled through a logging proxy. For the rare case where the sandbox must drop
-files onto the host, there is an explicit, opt-in rw scratch dir (`--out-dir`).
+own throwaway container with no access to host files — input only via `--copy-in`,
+output always to a fixed, human-set host prefix (`SANDBOX_OUT_ROOT`) — and all
+internet traffic funneled through a logging proxy.
 
 ## Architecture
 
@@ -33,7 +33,8 @@ Per task:
    `/workspace` the same way (`docker cp` cannot see mount content on this
    daemon, so all transfer uses `docker exec` stdio).
 3. Inside: `opencode run --standalone --auto --format json "<prompt>"`.
-4. Artifacts are collected into `runs/<run-id>/` and the containers are removed.
+4. Deliverables (whatever the agent wrote to `/workspace/out`) are on the host
+   prefix; `runs/<run-id>/` holds the rest, and the containers are removed.
 
 ## Model relay
 
@@ -48,12 +49,12 @@ tasks (started on demand); `./run.sh clean` removes it.
 
 ## Security model
 
-- **No host file access by default.** The only files that cross the boundary are
-  the ones you explicitly pass with `--copy-in`; results come back via
-  `/workspace/out` (copied into `runs/<run-id>/out`). `--out-dir DIR` is the one
-  opt-in exception: it bind-mounts DIR **rw** at `/workspace/out`, so the
-  untrusted agent can write/overwrite/delete anything inside it (see *Escape
-  hatch* below).
+- **Host access is input-only plus a fixed output prefix.** Files enter via
+  `--copy-in`; everything the sandbox writes to `/workspace/out` lands in
+  `SANDBOX_OUT_ROOT/<run-id>/` on the host (default `~/.sandbox`). That mount is
+  **rw**, so the untrusted agent can write/overwrite/delete anything under the
+  prefix — but the path is fixed by the human, never chosen by the task caller
+  (see *Host output* below).
 - **Egress is enforced and audited.** The sandbox network is `--internal`, so
   containers have no route to the internet at all. The only way out is the
   dual-homed tinyproxy (internal side toward the sandbox, egress side to the
@@ -79,33 +80,35 @@ tasks (started on demand); `./run.sh clean` removes it.
   proxy to an allowed domain — that traffic is recorded in `proxy.log` (which
   is why you audit it) but not prevented. Use `--sealed` for untrusted input.
 
-## Escape hatch (`--out-dir`) — writing onto the host
+## Host output (`SANDBOX_OUT_ROOT`) — always on
 
-By default the sandbox is one-way: input via `--copy-in`, output collected into
-`runs/<run-id>/out`. When you need the sandbox to drop files straight into a host
-directory (e.g. recover generated artifacts without hunting through `runs/`),
-pass `--out-dir DIR`: DIR is bind-mounted **rw** at `/workspace/out`.
+`/workspace/out` is **always** a real host directory: every run bind-mounts
+`SANDBOX_OUT_ROOT/<run-id>/` **rw** at `/workspace/out`. Whatever the sandbox
+writes as its deliverable is thus on the host immediately, owned by you
+(uid 1000) — there is no `runs/<run-id>/out` copy, and nothing is lost when the
+container is removed.
 
-**Treat DIR as a tmp.** The container runs untrusted code, so it can create,
-overwrite and delete anything inside DIR, and there is **no disk quota** and no
-overwrite protection. Point it at a disposable directory only. `run.sh`:
-
-- creates DIR as *you* (Docker would otherwise create a missing mount source as
-  `root`, unwritable by the uid-1000 sandbox user), then resolves it to a
-  canonical path;
-- refuses a handful of dangerous targets (`/`, `/home`, `/etc`, `/usr`, `/var`,
+- The prefix root is **fixed by the human only**, via `SANDBOX_OUT_ROOT`
+  (default `~/.sandbox`). A task caller cannot choose it.
+- The interactive session writes to `SANDBOX_OUT_ROOT/session/`.
+- If the root cannot be created (e.g. `$HOME`'s own root is read-only in the
+  OpenCode agent shell), `run.sh` warns and falls back to `runs/host/` — still a
+  fixed prefix, just inside this repo. Set `SANDBOX_OUT_ROOT` to pin it.
+- `run.sh` refuses dangerous roots (`/`, `/home`, `/etc`, `/usr`, `/var`,
   `/boot`, `/root`, `/proc`, `/sys`, `/dev`, `/run`, and `$HOME` itself).
 
-Symlinks inside DIR cannot escape it (the container has its own mount namespace,
-so `/etc/passwd` there is the container's), but the agent can still clobber real
-files you put there. With `--out-dir`, `/workspace/out` *is* the host dir, so no
-`runs/<run-id>/out` copy is made.
+Because it is a **real rw host mount**, the untrusted sandbox can
+write/overwrite/delete anything under that prefix (no overwrite protection and
+no disk quota). Symlinks cannot escape it (the container has its own mount
+namespace), but keep the root a dedicated scratch location, not a precious tree.
 
 ```bash
-mkdir -p ~/sandbox-scratch
-opencode-sb task --out-dir ~/sandbox-scratch \
-  --prompt "fetch the data and write /workspace/out/report.csv"
-ls ~/sandbox-scratch            # report.csv, owned by you
+# default prefix: ~/.sandbox/<run-id>/
+opencode-sb task --prompt "fetch the data and write /workspace/out/report.csv"
+ls ~/.sandbox/run-*/report.csv         # written by the sandbox, owned by you
+
+# override the prefix (human-only, via the environment)
+SANDBOX_OUT_ROOT=/tmp/sbx opencode-sb task --prompt "…"
 ```
 
 ## Global CLI
@@ -130,7 +133,7 @@ It resolves symlinks, so it works from any directory:
 | `opencode-sb task …` | one-shot sandboxed task (same flags as `run.sh task`) |
 | `opencode-sb status` | session / proxy / relay state |
 | `opencode-sb logs [RUN-ID]` | follow the session egress log, or print a run's log |
-| `opencode-sb up [--out-dir DIR]` / `down` | start / stop the session container |
+| `opencode-sb up` / `down` | start / stop the session container |
 | `opencode-sb models [--check]` | list the sandbox model catalog (`--check` validates refs) |
 | `opencode-sb clean` | remove orphaned sandbox/proxy/relay containers |
 
@@ -172,8 +175,9 @@ opencode-sb down
 
 # Inspect a finished run
 cat runs/<run-id>/result.json
-ls   runs/<run-id>/out/
-opencode-sb logs <run-id>    # or: ./run.sh logs <run-id>
+cat runs/<run-id>/hostout            # path of the host output dir
+ls  "$(cat runs/<run-id>/hostout)"   # deliverables, written by the sandbox
+opencode-sb logs <run-id>            # or: ./run.sh logs <run-id>
 
 opencode-sb clean            # remove orphaned containers
 ```
@@ -216,7 +220,7 @@ opencode-sb models --check    # validate the preferred refs (exit != 0 if gone)
 | `stderr.log` | OpenCode stderr/log output |
 | `proxy.conf` | the tinyproxy config used (subnet allow-list) |
 | `proxy.log` | every request the task made through the proxy |
-| `out/` | contents of the container's `/workspace/out` |
+| `hostout` | path of the host output dir for this run (`SANDBOX_OUT_ROOT/<run-id>`) |
 
 Exit code: `0` success, `124` timeout, other = task failed.
 
@@ -228,6 +232,7 @@ Exit code: `0` success, `124` timeout, other = task failed.
 | `MEM` / `--mem` | `8g` | memory limit |
 | `TIMEOUT` / `--timeout` | `1800` | hard timeout in seconds |
 | `OPENCODE_HOST_CONFIG` | `~/.config/opencode/opencode.jsonc` | base config for the sandbox |
+| `SANDBOX_OUT_ROOT` | `~/.sandbox` | fixed host output prefix (`<root>/<run-id>`; fallback `runs/host` if uncreatable) |
 
 ## Layout
 

@@ -131,8 +131,14 @@ function listDir(dir: string): string[] {
   }
 }
 
-function listOut(runDir: string): string[] {
-  return listDir(join(runDir, "out"));
+/** Host output dir (SANDBOX_OUT_ROOT/<run-id>) recorded by run.sh. */
+function readHostOut(runDir: string): string | null {
+  try {
+    const p = readFileSync(join(runDir, "hostout"), "utf8").trim();
+    return p || null;
+  } catch {
+    return null;
+  }
 }
 
 function render(run: Run): string {
@@ -152,8 +158,9 @@ export const run = tool({
     "agent starts with /workspace empty and writes deliverables to " +
     "/workspace/out. Prefer a free model; fall back to local (see the sandbox " +
     "skill's Model selection). After any task, audit the network with " +
-    "sandbox_logs. Results are copied to the run dir by default; pass out_dir " +
-    "to bind a host scratch dir at /workspace/out so files land on the host.",
+    "sandbox_logs. Whatever the agent writes to /workspace/out always lands on " +
+    "the host under a fixed prefix (SANDBOX_OUT_ROOT/<run-id>, default " +
+    "~/.sandbox); the returned artifacts list it.",
   args: {
     prompt: tool.schema
       .string()
@@ -174,16 +181,6 @@ export const run = tool({
       .array(tool.schema.string())
       .optional()
       .describe("Host paths to copy into /workspace (the only input channel)."),
-    out_dir: tool.schema
-      .string()
-      .optional()
-      .describe(
-        "Host dir to bind rw at /workspace/out: files the sandbox writes there " +
-          "land directly on the host (an escape hatch for recovering output). " +
-          "SCRATCH semantics — the untrusted agent can write/overwrite/delete " +
-          "anything in it, no overwrite protection and no disk quota, so point " +
-          "it at a disposable dir.",
-      ),
     sealed: tool.schema
       .boolean()
       .optional()
@@ -210,7 +207,6 @@ export const run = tool({
     if (args.cpus) argv.push("--cpus", String(args.cpus));
     if (args.mem) argv.push("--mem", args.mem);
     for (const path of args.copy_in ?? []) argv.push("--copy-in", path);
-    if (args.out_dir) argv.push("--out-dir", args.out_dir);
     if (args.sealed) argv.push("--sealed");
 
     // Host budget > sandbox timeout, so the 124 comes from the sandbox itself.
@@ -228,20 +224,19 @@ export const run = tool({
     let artifacts: string[] = [];
     let answer: string | null = null;
     const root = runsDir();
+    let hostOut: string | null = null;
     if (runId && root) {
       const dir = join(root, runId);
       answer = finalAnswer(dir);
-      artifacts = args.out_dir ? listDir(args.out_dir) : listOut(dir);
+      hostOut = readHostOut(dir);
+      artifacts = hostOut ? listDir(hostOut) : [];
       if (answer) {
         lines.push("", "— final answer (result.json) —", answer);
       }
       lines.push("", `artifacts: ${dir}/`);
-      if (args.out_dir) {
-        lines.push(
-          `out-dir: ${args.out_dir}/ (${artifacts.length} entr${artifacts.length === 1 ? "y" : "ies"}, rw escape hatch)`,
-        );
-      } else if (artifacts.length > 0) {
-        lines.push(`out/: ${artifacts.join(", ")}`);
+      if (hostOut) {
+        const n = artifacts.length;
+        lines.push(`host out: ${hostOut}/ (${n} entr${n === 1 ? "y" : "ies"})`);
       }
       if (run.code !== 0 && !existsSync(join(dir, "proxy.log"))) {
         lines.push("proxy.log absent (sealed run, or no network requests)");
@@ -251,7 +246,7 @@ export const run = tool({
     return {
       title: runId ? `sandbox_run ${runId} (exit ${run.code})` : `sandbox_run (exit ${run.code})`,
       output: lines.filter((l) => l !== undefined).join("\n"),
-      metadata: { run_id: runId, exit_code: run.code, artifacts, out_dir: args.out_dir ?? null, answer },
+      metadata: { run_id: runId, exit_code: run.code, host_out: hostOut, artifacts, answer },
     };
   },
 });
