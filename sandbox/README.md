@@ -17,7 +17,7 @@ host
     │                       <gateway>:18090 → 127.0.0.1:18089,
     │                       addressed as `model-relay` (static hosts entry)
     └── network "opencode-sandbox-net"
-        ├── proxy-<runid>    tinyproxy :8888, LOGS + ENFORCES egress
+        ├── proxy-<runid>    tinyproxy :8888 (non-root), LOGS + ENFORCES egress
         │                     (dual-homed: internal side + egress side)
         └── sandbox-<runid>  OpenCode (non-root, read-only rootfs, capped)
 ```
@@ -59,21 +59,43 @@ tasks (started on demand); `./run.sh clean` removes it.
   containers have no route to the internet at all. The only way out is the
   dual-homed tinyproxy (internal side toward the sandbox, egress side to the
   internet) — traffic that ignores the proxy simply fails rather than leaking
-  unlogged. Every request is logged to `runs/<run-id>/proxy.log`. Add `Filter`
+  unlogged. The proxy runs as the image's **non-root `tinyproxy` user**
+  (`--user`; `CAP_SETUID` is dropped, so it cannot drop privileges itself).
+  Every request is logged to `runs/<run-id>/proxy.log`. Add `Filter`
   rules in `proxy/tinyproxy.conf.in` to block specific domains.
 - **`--sealed`** drops the proxy entirely: internal network only, zero egress
   (the model relay still works, since it is on the bridge's own gateway).
-- Hardened runtime: `--read-only` rootfs, `--cap-drop=ALL`,
+- **Nothing in the container can become root.** The worker image ends in
+  `USER sandbox` (uid 1000), carries no `sudo` package and **no setuid
+  binaries**, and runs with `--read-only` rootfs, `--cap-drop=ALL`,
   `--security-opt no-new-privileges`, `--pids-limit=256`, `--shm-size=512m`,
-  CPU/memory caps, non-root user (uid 1000), no docker.sock, hard timeout.
-- Writable tmpfs areas (`/tmp`, `/workspace`, caches) are mounted **`exec`**:
-  required because bun/OpenTUI `dlopen`s a native library from `/tmp` (the TUI
-  fails with *"failed to map segment from shared object"* under the default
-  `noexec`), and because build outputs in `/workspace` must be runnable.
-  `noexec` inside the container buys nothing — the container is the boundary.
+  CPU/memory caps, no docker.sock, no devices, and a hard timeout. Verify from
+  inside: `id` (uid 1000), `grep CapEff /proc/self/status` (all zeroes),
+  `touch /x` (*read-only file system*).
+- Writable tmpfs areas (`/tmp`, `/workspace`, `~/.cache`, …) are mounted
+  **`exec`**: required because bun/OpenTUI `dlopen`s a native library from
+  `/tmp` (the TUI fails with *"failed to map segment from shared object"* under
+  the default `noexec`), and because build outputs in `/workspace` must be
+  runnable. `noexec` inside the container buys nothing — the container is the
+  boundary. They are **size-capped** (`SANDBOX_TMP_SIZE`, default 4g;
+  `SANDBOX_WORKSPACE_SIZE`, 16g; `SANDBOX_HOME_TMPFS_SIZE`, 1g per state dir)
+  because tmpfs pages are host RAM and Docker does **not** charge them to
+  `--memory`: without a cap a single runaway download could exhaust the host.
 - The sandbox user is non-root: no `dnf`, no system writes. Tooling is
   preinstalled (git, ripgrep, python3, nodejs, jq, …); user-level installs work
   (`pip install --user`, `npm install --prefix`).
+- Caveat — **container-grade isolation, not VM-grade.** Containers share the
+  host kernel, and this setup uses no user-namespace remapping and no
+  SELinux/AppArmor confinement (Docker's seccomp `builtin` profile is the only
+  sandboxing layer). A kernel or runtime exploit escapes to the real host as
+  uid 1000. Treat the sandbox as untrusted code with a strong container
+  boundary: keep the output prefix a scratch dir, never point `COPY_IN` at
+  secrets, and consider `userns-remap`/rootless Docker for stronger separation.
+- Caveat — the **bridge gateway is reachable**: any host service bound to
+  `0.0.0.0` (or the bridge IP) can be reached from the sandbox, bypassing the
+  proxy and the `proxy.log`. Keep model servers on `127.0.0.1` (as NInfer
+  already is) so they are only reachable through the relay, or add a
+  `DOCKER-USER` firewall rule.
 - Caveat: egress *is* enforced (an internal network plus a dual-homed proxy),
   so nothing leaves unlogged. But the proxy is still an allowed channel: a
   malicious task can deliberately exfiltrate data by POSTing it through the
@@ -323,6 +345,10 @@ Exit code: `0` success, `124` timeout, other = task failed.
 | `CPUS` / `--cpus` | `4` | CPU limit |
 | `MEM` / `--mem` | `8g` | memory limit |
 | `TIMEOUT` / `--timeout` | `1800` | hard timeout in seconds |
+| `SANDBOX_TMP_SIZE` | `4g` | cap for `/tmp` (tmpfs, host RAM, not charged to `--memory`) |
+| `SANDBOX_WORKSPACE_SIZE` | `16g` | cap for `/workspace` (same caveat) |
+| `SANDBOX_HOME_TMPFS_SIZE` | `1g` | cap per state dir (`~/.cache`, `~/.local`, `~/.npm`, `~/.bun`, `~/.config`) |
+| `SANDBOX_WEBSEARCH_PROVIDER` | host value / `random` | websearch provider seeded into the sandbox DB |
 | `OPENCODE_HOST_CONFIG` | `~/.config/opencode/opencode.jsonc` | base config for the sandbox |
 | `SANDBOX_OUT_ROOT` | `~/.sandbox` | fixed host output prefix (`<root>/<run-id>`; fallback `runs/host` if uncreatable) |
 

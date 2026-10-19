@@ -70,6 +70,16 @@ RUN useradd -m -u 1000 -s /bin/bash sandbox \
     && mkdir -p /workspace /home/sandbox/.config/opencode \
     && chown -R sandbox:sandbox /home/sandbox /workspace
 
+# Belt and braces against becoming root: remove the `sudo` package and the
+# setuid bit from everything left (su, mount, passwd, ...). `no-new-privileges`
+# already ignores these at runtime, but a disposable worker has no use for them,
+# so a future flag change cannot reopen the door. `rpm -e --nodeps` because dnf
+# refuses to remove a protected package; nothing depends on sudo. The build
+# fails if any setuid binary survives.
+RUN rpm -e --nodeps sudo \
+    && find / -xdev -perm -4000 -type f -exec chmod u-s {} + 2>/dev/null \
+    && ! find / -xdev -perm -4000 -type f -print -quit 2>/dev/null | grep -q .
+
 WORKDIR /workspace
 USER sandbox
 ENTRYPOINT ["opencode"]

@@ -53,6 +53,13 @@ CPUS="${CPUS:-4}"
 MEM="${MEM:-8g}"
 TIMEOUT="${TIMEOUT:-1800}"
 
+# The worker's writable areas are RAM-backed tmpfs, which Docker does NOT charge
+# to --memory. Size them so a runaway download/build/extraction cannot eat the
+# host's RAM; they are the only knobs a caller normally needs to raise.
+TMP_SIZE="${SANDBOX_TMP_SIZE:-4g}"
+WORKSPACE_SIZE="${SANDBOX_WORKSPACE_SIZE:-16g}"
+HOME_TMPFS_SIZE="${SANDBOX_HOME_TMPFS_SIZE:-1g}"
+
 log() { printf '[opencode-sandbox] %s\n' "$*" >&2; }
 
 usage() {
@@ -183,7 +190,7 @@ ensure_relay() { # $1 = network
   docker rm -f "$name" >/dev/null 2>&1 || true
   docker run -d --name "$name" \
     --network host \
-    --read-only --tmpfs /tmp \
+    --read-only --tmpfs /tmp:rw,noexec,size=16m \
     --cap-drop=ALL --security-opt no-new-privileges \
     -v "$ROOT/relay/forward.py:/relay/forward.py:ro" \
     --entrypoint python3 \
@@ -207,10 +214,18 @@ start_proxy() { # $1 = name, $2 = sandbox (internal) network, $3 = conf file
   # internet, internal side is how sandbox containers reach the proxy. This
   # makes the proxy the only egress path, so logging is enforced, not advisory.
   ensure_network "$EGRESS_NETWORK"
+  # --user tinyproxy: this process parses untrusted proxy traffic, so it must
+  # not be root. tinyproxy cannot drop privileges itself here (CAP_SETUID is
+  # dropped), so Docker does the drop; the /var/log tmpfs is world-writable
+  # (sticky) so the log file stays writable whatever uid the image uses.
   docker run -d --name "$1" \
     --network "$EGRESS_NETWORK" \
-    --read-only --tmpfs /tmp --tmpfs /run --tmpfs /var/log \
+    --read-only \
+    --tmpfs /tmp:rw,noexec,size="${PROXY_TMP_SIZE:-16m}" \
+    --tmpfs /run:rw,noexec,mode=1777,size="${PROXY_RUN_SIZE:-4m}" \
+    --tmpfs /var/log:rw,mode=1777,size="${PROXY_LOG_SIZE:-32m}" \
     --cap-drop=ALL --security-opt no-new-privileges \
+    --user tinyproxy \
     -v "$3:/etc/tinyproxy/tinyproxy.conf:ro" \
     "$PROXY_IMAGE" >/dev/null
   docker network connect "$2" "$1"
@@ -323,7 +338,16 @@ worker_models() {
 
   local cname="models-$$-$RANDOM" out
   docker rm -f "$cname" >/dev/null 2>&1 || true
-  docker create --name "$cname" --network none --entrypoint sleep \
+  # Same isolation as a task container, minus the network: this only lists the
+  # model catalog, but it still runs the image's CLI against the host config.
+  docker create --name "$cname" --network none \
+    --read-only \
+    --tmpfs /tmp:rw,noexec,size=64m \
+    --tmpfs /home/sandbox/.config:rw,uid=1000,gid=1000,size=16m \
+    --tmpfs /home/sandbox/.cache:rw,uid=1000,gid=1000,size=128m \
+    --tmpfs /home/sandbox/.local:rw,uid=1000,gid=1000,size=128m \
+    --cap-drop=ALL --security-opt no-new-privileges --pids-limit=128 \
+    --entrypoint sleep \
     "$WORKER_IMAGE" infinity >/dev/null
   docker start "$cname" >/dev/null
   stream_file_into "$cname" "$cfgdir/opencode.jsonc" \
@@ -423,13 +447,14 @@ worker_create_flags() { # $1 = network
     # runnable. Docker's tmpfs default is noexec, which breaks both with
     # "failed to map segment from shared object". Inside the container the
     # sandbox boundary is the security control, so noexec buys nothing here.
-    --tmpfs /tmp:rw,exec,mode=1777
-    --tmpfs /workspace:rw,exec,uid=1000,gid=1000
-    --tmpfs /home/sandbox/.local:rw,exec,uid=1000,gid=1000
-    --tmpfs /home/sandbox/.cache:rw,exec,uid=1000,gid=1000
-    --tmpfs /home/sandbox/.config:rw,exec,uid=1000,gid=1000
-    --tmpfs /home/sandbox/.npm:rw,exec,uid=1000,gid=1000
-    --tmpfs /home/sandbox/.bun:rw,exec,uid=1000,gid=1000
+    # size= matters: tmpfs pages are host RAM and are not counted by --memory.
+    --tmpfs "/tmp:rw,exec,mode=1777,size=$TMP_SIZE"
+    --tmpfs "/workspace:rw,exec,uid=1000,gid=1000,size=$WORKSPACE_SIZE"
+    --tmpfs "/home/sandbox/.local:rw,exec,uid=1000,gid=1000,size=$HOME_TMPFS_SIZE"
+    --tmpfs "/home/sandbox/.cache:rw,exec,uid=1000,gid=1000,size=$HOME_TMPFS_SIZE"
+    --tmpfs "/home/sandbox/.config:rw,exec,uid=1000,gid=1000,size=$HOME_TMPFS_SIZE"
+    --tmpfs "/home/sandbox/.npm:rw,exec,uid=1000,gid=1000,size=$HOME_TMPFS_SIZE"
+    --tmpfs "/home/sandbox/.bun:rw,exec,uid=1000,gid=1000,size=$HOME_TMPFS_SIZE"
     --cap-drop=ALL --security-opt no-new-privileges
     --pids-limit=256
     --shm-size=512m

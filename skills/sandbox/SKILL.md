@@ -8,7 +8,7 @@ metadata:
 
 ## What it is
 
-`opencode-sandbox` runs an ephemeral OpenCode instance inside a disposable Docker container. You delegate the task and it runs isolated from the host: **no host files as input** (only `copy_in`), no docker.sock, no capabilities, egress network controlled. Whatever it writes to `/workspace/out` lands in a **fixed, human-set host prefix** (`SANDBOX_OUT_ROOT`, default `~/.sandbox`). It's for doing the dirty work away from the real machine.
+`opencode-sandbox` runs an ephemeral OpenCode instance inside a disposable Docker container. You delegate the task and it runs isolated from the host: **no host files as input** (only `copy_in`), no docker.sock, no capabilities, **non-root (uid 1000) with no setuid binaries**, egress network controlled. Whatever it writes to `/workspace/out` lands in a **fixed, human-set host prefix** (`SANDBOX_OUT_ROOT`, default `~/.sandbox`). It's for doing the dirty work away from the real machine. Isolation is container-grade (shared kernel): do not feed it secrets.
 
 Global CLI: `opencode-sb` (alias of `opencode-sandboxed`).
 Project: this repo's `sandbox/` dir — `sandbox/README.md` and `sandbox/ORCHESTRATION.md` for full reference.
