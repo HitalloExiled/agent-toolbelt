@@ -4,7 +4,7 @@
  * Thin, typed wrapper over the global `notes` CLI, which lives in
  * ../memory/notes.py inside this repo. The wrapper exposes NO destructive
  * operation: add / update / confirm / dispute / retract / history / restore /
- * search / list / doctor. `update` and the trust flags change an existing note;
+ * view / search / list / doctor. `update` and the trust flags change an existing note;
  * `retract` only hides it (reversible); `restore` brings back an old revision.
  * Nothing is ever deleted, and every `update`/`restore` keeps the previous
  * version readable via `history`.
@@ -424,6 +424,29 @@ export const restore = tool({
       title: `notes_restore: ${args.id} <- rev ${args.rev}`,
       output: render(run),
       metadata: { id: args.id, rev: args.rev, exit: run.code },
+    };
+  },
+});
+
+export const view = tool({
+  description:
+    "Show one note by id, in full, whatever its trust state — retracted notes " +
+    "included, with the 🚫 badge. Use it when you already have an id from " +
+    "notes_search / notes_list, or to inspect a note that no longer appears in " +
+    "search before deciding to notes_confirm or notes_update it.",
+  args: {
+    id: tool.schema
+      .number()
+      .int()
+      .positive()
+      .describe("Note id, shown as #NN by notes_search / notes_list."),
+  },
+  async execute(args) {
+    const run = await runNb(["view", String(args.id)]);
+    return {
+      title: `notes_view: ${args.id}`,
+      output: render(run),
+      metadata: { id: args.id, exit: run.code },
     };
   },
 });

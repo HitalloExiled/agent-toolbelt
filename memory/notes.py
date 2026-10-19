@@ -455,7 +455,11 @@ def _like_pass(
         like = f"%{w}%"
         groups.append("(title LIKE ? OR content LIKE ? OR tags LIKE ? OR category LIKE ?)")
         params += [like, like, like, like]
-    sql = f"SELECT {note_columns()} FROM notes WHERE " + f" {joiner} ".join(groups)
+    sql = (
+        f"SELECT {note_columns()} FROM notes WHERE ("
+        + f" {joiner} ".join(groups)
+        + ")"
+    )
     if not all:
         sql += " AND retracted_at IS NULL"
     sql += _ORDER_LIKE
@@ -542,6 +546,25 @@ def print_list(limit: int = DEFAULT_LIST_LIMIT, all: bool = False) -> None:
         print("📭 Nenhuma nota registrada ainda.")
         return
     _print_rows(f"📋 Últimas {len(rows)} nota(s):", rows)
+
+
+def view_note(note_id: int) -> int:
+    """Mostra uma nota pelo id, com as flags de confiança.
+
+    Acesso direto: não filtra retratadas (mostra com o selo 🚫), para que dê
+    para inspecionar/reviver uma nota que sumiu da busca.
+    """
+    init_db()
+    conn = _connect()
+    try:
+        note = _load_note(conn, note_id)
+    finally:
+        conn.close()
+    if note is None:
+        print(f"❌ Nota {note_id} não encontrada.")
+        return 1
+    _print_rows(f"📄 Nota #{note_id}", [note])
+    return 0
 
 
 def _print_revision(row) -> None:
@@ -939,6 +962,7 @@ Uso:
   notes retract <id> [--why "<motivo>"] # 🚫 lixo/obsoleta: some do search/list (reversível)
   notes history <id> [limite]       # versão atual + revisões (`update` guarda cada uma)
   notes restore <id> <rev>          # traz o conteúdo de uma revisão de volta (nada se perde)
+  notes view <id>                   # mostra a nota completa (alias: show; inclui retratada)
   notes search "<termo>" [limite] [--all]  # todas as palavras (AND); depois OR
   notes list [limite] [--all]       # padrão: {DEFAULT_LIST_LIMIT}; --all inclui retratadas
   notes doctor                      # diagnóstico da máquina/banco
@@ -1054,6 +1078,16 @@ def main(argv: list[str]) -> int:
             print(f'Erro: ids inválidos: {argv[2]!r} {argv[3]!r}')
             return 1
         return restore_note(note_id, revision_id)
+    elif cmd in ("view", "show"):
+        if len(argv) < 3:
+            print('Erro: "view" requer o id da nota.')
+            return 1
+        try:
+            note_id = int(argv[2])
+        except ValueError:
+            print(f'Erro: id inválido: {argv[2]!r}')
+            return 1
+        return view_note(note_id)
     elif cmd == "search":
         args = argv[2:]
         all_flag = "--all" in args

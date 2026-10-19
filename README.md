@@ -6,7 +6,7 @@ Nasceu de dois subsistemas:
 - **`notes`** — memória de longa duração do agente (SQLite + FTS5 opcional),
   exposta como CLI global `notes` e como as tools `notes_add` /
   `notes_update` / `notes_confirm` / `notes_dispute` / `notes_retract` /
-  `notes_history` / `notes_restore` / `notes_search` / `notes_doctor`.
+  `notes_history` / `notes_restore` / `notes_view` / `notes_search` / `notes_doctor`.
 - **`sandbox`** — delegação de trabalho com risco para um container Docker
   descartável, via as tools `sandbox_run` / `sandbox_logs` / `sandbox_status`
   (wrapper do CLI `opencode-sb`, em `sandbox/`).
@@ -109,6 +109,7 @@ notes dispute <id> --why "<motivo>"    # ⚠ suspeita, sem correção ainda: mos
 notes retract <id> [--why "<motivo>"]  # 🚫 lixo/obsoleta: sai do search/list (reversível)
 notes history <id> [limite]        # versão atual + revisões (cada `update` guarda uma)
 notes restore <id> <rev>           # devolve o conteúdo de uma revisão (nada se perde)
+notes view <id>                    # a nota inteira pelo id (alias: show; inclui retratada)
 notes search "<termo>" [limite] [--all]  # todas as palavras (AND); sem match, OR
 notes list [limite] [--all]        # padrão 10; --all inclui retratadas
 notes doctor                       # python/sqlite, FTS5, schema, contagem, confiança
@@ -155,6 +156,7 @@ exposta por nenhuma tool** — é para o humano, no terminal dele.
 | `notes_retract` | 🚫 esconde lixo/obsoleto do search/list (reversível; nada é apagado) |
 | `notes_history` | versão atual + revisões anteriores de uma nota (rev #N) |
 | `notes_restore` | devolve o conteúdo de uma revisão (a versão atual é guardada antes) |
+| `notes_view` | mostra a nota inteira pelo id, em qualquer estado (retratada incluída, com 🚫) |
 | `notes_search` | busca; sem `query`, lista as últimas (disputadas por último; retratadas ocultas) |
 | `notes_doctor` | diagnostica memória/schema/FTS5 e o estado de confiança |
 | `sandbox_run` | tarefa isolada; devolve resposta final, exit code e artefatos |

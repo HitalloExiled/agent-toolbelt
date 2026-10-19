@@ -1,6 +1,6 @@
 ---
 name: notes
-description: Long-term memory in SQLite (FTS5) via global CLI `notes` and tools `notes_add`/`notes_update`/`notes_confirm`/`notes_dispute`/`notes_retract`/`notes_history`/`notes_restore`/`notes_search`/`notes_doctor`. Use to remember or recover decisions, configuration, snippets, and project context from previous sessions, and to record new notes — including the mandatory registration of resolved problems with symptom, cause, and solution. `notes_update` is a last resort, only to fix a note that is now known to be wrong or conflicts with verified information, and it keeps the previous version readable via `notes_history`/`notes_restore`; `notes_confirm`/`notes_dispute` set the trust signal on a note read as-is, and `notes_retract` hides noise without deleting. Refer to it whenever the user asks what was decided/done before, asks for previous context, or before working on a project with history.
+description: Long-term memory in SQLite (FTS5) via global CLI `notes` and tools `notes_add`/`notes_update`/`notes_confirm`/`notes_dispute`/`notes_retract`/`notes_history`/`notes_restore`/`notes_view`/`notes_search`/`notes_doctor`. Use to remember or recover decisions, configuration, snippets, and project context from previous sessions, and to record new notes — including the mandatory registration of resolved problems with symptom, cause, and solution. `notes_update` is a last resort, only to fix a note that is now known to be wrong or conflicts with verified information, and it keeps the previous version readable via `notes_history`/`notes_restore`; `notes_confirm`/`notes_dispute` set the trust signal on a note read as-is, and `notes_retract` hides noise without deleting. Refer to it whenever the user asks what was decided/done before, asks for previous context, or before working on a project with history.
 metadata:
   audience: any
   opencode/slash: "true"
@@ -26,6 +26,7 @@ Implementation and installation: repo **`agent-toolbelt`** (section `memory/`).
 | `notes_retract` | 🚫 hide junk/obsolete noise from search/list (reversible, nothing is deleted) |
 | `notes_history` | read a note's current state + every earlier version (rev #N) |
 | `notes_restore` | bring back the content of an earlier rev #N (keeps the current one too) |
+| `notes_view` | show one note by id in full, whatever its state (retracted included, with 🚫) |
 | `notes_doctor` | diagnose memory/schema/FTS5 when something fails |
 
 Via terminal (or when tools are unavailable), the equivalent CLI:
@@ -41,6 +42,7 @@ notes dispute <id> --why "<reason>"   # suspicious, but not corrected: shown las
 notes retract <id> [--why "<reason>"] # junk/obsolete: gone from search/list
 notes history <id> [limit]             # current state + earlier versions (rev #N)
 notes restore <id> <rev>               # bring back a rev's content (current kept)
+notes view <id>                        # the whole note by id (alias: show)
 notes doctor                      # diagnosis
 ```
 
