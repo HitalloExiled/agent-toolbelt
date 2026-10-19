@@ -5,6 +5,9 @@
 #   ./run.sh task  --prompt "..." [options]   run one sandboxed task
 #   ./run.sh watch [<run-id>]                  follow a run's full live transcript
 #   ./run.sh peek  [<run-id>] [-n N]           bounded snapshot: last N messages
+#   ./run.sh watch --session [--from-start]    follow the active session live
+#   ./run.sh peek  --session [-n N] [<sid>]    bounded snapshot of the session
+#   ./run.sh sessions                          list the session's sessions
 #   ./run.sh up                                start a long-lived session container
 #   ./run.sh down                              stop and remove the session container
 #   ./run.sh logs  <run-id>                    show the egress proxy log of a run
@@ -58,6 +61,9 @@ Usage:
   ./run.sh task --prompt "..." [options]     run one sandboxed task
   ./run.sh watch [<run-id>]                  follow a run's full live transcript
   ./run.sh peek  [<run-id>] [-n N]           bounded snapshot: last N messages (default 12)
+  ./run.sh watch --session [--from-start]    follow the active session live
+  ./run.sh peek  --session [-n N] [<sid>]    bounded snapshot of the active session
+  ./run.sh sessions                          list the running session's sessions
   ./run.sh up                                start a long-lived session container
   ./run.sh down                              stop and remove the session container
   ./run.sh logs <run-id>                     show the egress proxy log of a run
@@ -766,8 +772,25 @@ resolve_run() {
 }
 
 cmd_watch() {
+  local session=0 from_start=0 arg=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --session)    session=1; shift ;;
+      --from-start) from_start=1; shift ;;
+      -*) log "unknown option for 'watch': $1"; exit 2 ;;
+      *) arg="$1"; shift ;;
+    esac
+  done
+  if [ "$session" = 1 ]; then
+    session_running || { log "no running session (start one: opencode-sb up)"; exit 1; }
+    if [ "$from_start" = 1 ]; then
+      exec docker exec -i "$SESSION" python3 - watch --from-start "$arg" \
+        < "$ROOT/session_journal.py"
+    fi
+    exec docker exec -i "$SESSION" python3 - watch "$arg" < "$ROOT/session_journal.py"
+  fi
   local runid dir
-  runid="$(resolve_run "${1:-}")"
+  runid="$(resolve_run "$arg")"
   if [ -z "$runid" ]; then log "no runs in $RUNS_DIR"; exit 1; fi
   dir="$RUNS_DIR/$runid"
   [ -d "$dir" ] || { log "unknown run: $runid"; exit 2; }
@@ -778,17 +801,29 @@ cmd_watch() {
   exec python3 -u "$ROOT/journal.py" watch "$dir"
 }
 
+# List the running session's sessions (id, message count, age, title).
+cmd_sessions() {
+  session_running || { log "no running session (start one: opencode-sb up)"; exit 1; }
+  exec docker exec -i "$SESSION" python3 - list < "$ROOT/session_journal.py"
+}
+
 # Bounded snapshot for a host agent: status + only the last N messages, so a
 # peek never pulls the whole transcript into the caller's context.
 cmd_peek() {
-  local runid="" limit=""
+  local runid="" limit="" session=0
   while [ $# -gt 0 ]; do
     case "$1" in
+      --session) session=1; shift ;;
       -n|--lines) limit="${2:?}"; shift 2 ;;
       -*) log "unknown option for 'peek': $1"; exit 2 ;;
       *) runid="$1"; shift ;;
     esac
   done
+  if [ "$session" = 1 ]; then
+    session_running || { log "no running session (start one: opencode-sb up)"; exit 1; }
+    exec docker exec -i "$SESSION" python3 - peek "$limit" "$runid" \
+      < "$ROOT/session_journal.py"
+  fi
   runid="$(resolve_run "$runid")"
   if [ -z "$runid" ]; then log "no runs in $RUNS_DIR"; exit 1; fi
   local dir="$RUNS_DIR/$runid"
@@ -823,6 +858,7 @@ case "${1:-help}" in
   down)  cmd_down ;;
   watch) shift; cmd_watch "$@" ;;
   peek)  shift; cmd_peek "$@" ;;
+  sessions) cmd_sessions ;;
   logs)  shift; cmd_logs "$@" ;;
   models) shift; cmd_models "$@" ;;
   clean) cmd_clean ;;

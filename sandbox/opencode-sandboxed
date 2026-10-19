@@ -8,8 +8,9 @@
 #   opencode-sandboxed status               show session, proxy and relay status
 #   opencode-sandboxed logs [RUN-ID]        tail session egress log, or a run log
 #   opencode-sandboxed task [OPTIONS]       run a one-shot sandboxed task
-#   opencode-sandboxed watch [RUN-ID]       follow a run's live transcript (human)
-#   opencode-sandboxed peek [RUN-ID] [-n N] bounded snapshot: last N messages (agent)
+#   opencode-sandboxed watch [RUN-ID]       follow a run live (--session: the session)
+#   opencode-sandboxed peek [RUN-ID] [-n N] bounded snapshot (--session: the session)
+#   opencode-sandboxed sessions             list the active session's sessions
 #   opencode-sandboxed models [--check]     list the model catalog; --check validates
 #   opencode-sandboxed clean                remove orphaned sandbox/proxy/relay
 #
@@ -74,6 +75,9 @@ case "$cmd" in
     shift
     exec "$ROOT/run.sh" peek "$@"
     ;;
+  sessions)
+    exec "$ROOT/run.sh" sessions
+    ;;
   up)
     exec "$ROOT/run.sh" up
     ;;
@@ -110,11 +114,11 @@ case "$cmd" in
     exec docker logs -f "$SESSION_PROXY"
     ;;
   help|-h|--help)
-    sed -n '3,21p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '3,22p' "$0" | sed 's/^# \{0,1\}//'
     ;;
   *)
     echo "unknown command: $cmd" >&2
-    echo "try: opencode-sandboxed | run | task | watch | peek | up | down | status | logs | models | clean" >&2
+    echo "try: opencode-sandboxed | run | task | watch | peek | sessions | up | down | status | logs | models | clean" >&2
     exit 2
     ;;
 esac

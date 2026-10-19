@@ -90,6 +90,17 @@ truncated), and the output files. Poll as often as you like.
 Reserve `opencode-sb watch <run-id>` for a **human** — it follows the full live
 transcript until the run ends. Don't call it from the host agent.
 
+The **session** (the long-lived TUI) has no `result.json`, but has the same two
+views over its SQLite history:
+
+```bash
+opencode-sb peek --session          # bounded: session title + last 12 parts
+opencode-sb peek --session -n 4     # tighter window
+opencode-sb sessions                # ids/titles, to target a specific session
+```
+
+Same rule: poll `peek --session`; leave `watch --session` to the human.
+
 ## Choosing isolation
 
 - **Default (enforced egress):** the agent has internet *only* through the

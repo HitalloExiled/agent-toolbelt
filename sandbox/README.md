@@ -140,6 +140,29 @@ opencode-sb watch "$runid"     # (human) full live transcript until it ends
 finishes, `run.sh` writes its exit code to `runs/<run-id>/exit`; that marker is
 how both followers know to stop.
 
+## Following a session
+
+The long-lived **session** (`opencode-sb`, the TUI) has no `result.json`; its
+history lives in the container's SQLite store. Both views read that store
+directly, so they work while the TUI is open in another terminal:
+
+- **Live (human).** `opencode-sb watch --session` follows the active session.
+  Attaching shows only what happens *next* (no history dump); if a newer session
+  becomes active — e.g. an `opencode-sb run` starts one — it switches and prints
+  that one from the start. Assistant text streams as it is generated.
+  `--from-start` replays the whole current session instead.
+- **Bounded (host agent).** `opencode-sb peek --session [-n N] [<session-id>]`
+  prints the session title and only the last N parts (default 12, each
+  truncated) — use this from the host agent.
+- **Pick a session.** `opencode-sb sessions` lists recent sessions (id, message
+  count, age, title); pass an id to narrow either view.
+
+```bash
+opencode-sb sessions            # id, msgs, age, title
+opencode-sb peek --session      # newest session, last 12 parts
+opencode-sb watch --session     # (human) live; ctrl-c to stop
+```
+
 ## Global CLI
 
 `opencode-sandboxed` is the single entry point and is installable globally
@@ -162,6 +185,9 @@ It resolves symlinks, so it works from any directory:
 | `opencode-sb task …` | one-shot sandboxed task (same flags as `run.sh task`) |
 | `opencode-sb watch [RUN-ID]` | follow a run's full live transcript (human) |
 | `opencode-sb peek [RUN-ID] [-n N]` | bounded snapshot: status + last N messages |
+| `opencode-sb watch --session` | follow the active session live (human) |
+| `opencode-sb peek --session [-n N]` | bounded snapshot of the active session |
+| `opencode-sb sessions` | list recent sessions (id, messages, age, title) |
 | `opencode-sb status` | session / proxy / relay state |
 | `opencode-sb logs [RUN-ID]` | follow the session egress log, or print a run's log |
 | `opencode-sb up` / `down` | start / stop the session container |

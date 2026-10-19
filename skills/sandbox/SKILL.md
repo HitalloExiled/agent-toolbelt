@@ -63,6 +63,15 @@ opencode-sb status      # session/proxy/relay state
 opencode-sb down        # destroy the session when done
 ```
 
+To see what the session is doing, use the same bounded rule as for runs:
+
+```bash
+opencode-sb peek --session         # title + last 12 parts (truncated) — for you
+opencode-sb peek --session -n 4    # tighter window
+opencode-sb sessions               # recent sessions: id, msgs, age, title
+opencode-sb watch --session        # (human only) live follow; ctrl-c to stop
+```
+
 Session state lives in the container's tmpfs until `down`. Prefer `task` for isolated work.
 
 ## Model selection
@@ -126,6 +135,7 @@ After any task, read the final answer and **review the network with `sandbox_log
 - Don't assume `/workspace` persists across tasks — each `task` is fresh.
 - Never mount host paths yourself: the only surfaces are `copy_in` (input) and the fixed output prefix `SANDBOX_OUT_ROOT/<run-id>/` (output, set by the human via the environment).
 - Never stream a run with `watch` (or `tail` its `result.json`) into your context — use the bounded `peek`.
+- The same goes for the session: `peek --session` for you, `watch --session` for the human.
 - Don't trust untrusted code/files without first running `--sealed` and reviewing output and log.
 
 ## Examples
