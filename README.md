@@ -5,7 +5,7 @@ Nasceu de dois subsistemas:
 
 - **`notes`** — memória de longa duração do agente (SQLite + FTS5 opcional),
   exposta como CLI global `notes` e como as tools `notes_add` /
-  `notes_search` / `notes_doctor`.
+  `notes_update` / `notes_search` / `notes_doctor`.
 - **`sandbox`** — delegação de trabalho com risco para um container Docker
   descartável, via as tools `sandbox_run` / `sandbox_logs` / `sandbox_status`
   (wrapper do CLI `opencode-sb`, em `sandbox/`).
@@ -100,6 +100,8 @@ notes import ~/notes-backup.json   # append, ignorando duplicadas
 
 ```bash
 notes add "<categoria>" "<título>" "<tags>" "<conteúdo>"
+notes update <id> [--title T] [--tags T] [--content C | --content-file F]
+                  [--category C]   # ÚLTIMO RECURSO: corrige informação conflitante
 notes search "<termo>" [limite]    # múltiplas palavras = OR
 notes list [limite]                # padrão 10
 notes doctor                       # python/sqlite, FTS5, schema, contagem, índice

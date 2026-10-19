@@ -19,6 +19,7 @@ import os
 import re
 import sqlite3
 import sys
+import unicodedata
 from datetime import datetime
 
 SCHEMA_VERSION = 1
@@ -162,11 +163,27 @@ def normalize_category(category: str) -> str:
     return f"#{token}" if token else "#general"
 
 
+def now_timestamp() -> str:
+    """Timestamp de criacao/atualizacao, com segundos.
+
+    Segundos importam para `update`: uma correcao no mesmo minuto da criacao
+    precisa mudar o timestamp (e a ordenacao) de forma observavel.
+    """
+    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+
+def missing_problem_sections(content: str) -> list[str]:
+    """Secoes obrigatorias ausentes numa nota #problem (sem acento/caixa)."""
+    text = unicodedata.normalize("NFD", content or "")
+    text = "".join(c for c in text if not unicodedata.combining(c)).lower()
+    return [label for label in ("Symptom", "Cause", "Solution") if label.lower() not in text]
+
+
 def add_note(category: str, title: str, tags: str, content: str) -> None:
     init_db()
     conn = _connect()
     try:
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
+        timestamp = now_timestamp()
         cur = conn.execute(
             "INSERT INTO notes (timestamp, category, tags, title, content)"
             " VALUES (?, ?, ?, ?, ?)",
@@ -174,6 +191,68 @@ def add_note(category: str, title: str, tags: str, content: str) -> None:
         )
         conn.commit()
         print(f"✅ Nota {cur.lastrowid} salva em {timestamp} [{normalize_category(category)}]")
+    finally:
+        conn.close()
+
+
+def update_note(
+    note_id: int,
+    title: str | None = None,
+    tags: str | None = None,
+    content: str | None = None,
+    category: str | None = None,
+) -> int:
+    """Corrige uma nota existente, movendo o timestamp para agora.
+
+    ULTIMO RECURSO: existe para consertar informacao errada/conflitante, nao
+    para reescrever historico. Campos omitidos ficam como estao. Se a nota
+    resultante for #problem, as secoes Symptom/Cause/Solution continuam
+    obrigatorias.
+    """
+    if title is None and tags is None and content is None and category is None:
+        print("Erro: 'update' requer ao menos um campo (--title/--tags/--content/--category).")
+        return 1
+
+    init_db()
+    conn = _connect()
+    try:
+        row = conn.execute(
+            "SELECT timestamp, category, tags, title, content FROM notes WHERE id = ?",
+            (note_id,),
+        ).fetchone()
+        if row is None:
+            print(f"❌ Nota {note_id} não encontrada.")
+            return 1
+
+        old_timestamp, old_category, old_tags, old_title, old_content = row
+        new_category = normalize_category(category) if category is not None else old_category
+        new_tags = old_tags if tags is None else tags
+        new_title = old_title if title is None else title
+        new_content = old_content if content is None else content
+
+        if not new_title.strip():
+            print("❌ título vazio: a nota ficaria sem identificação.")
+            return 1
+        if new_category == "#problem":
+            missing = missing_problem_sections(new_content)
+            if missing:
+                print(
+                    "❌ Nota NÃO atualizada: conteúdo #problem sem "
+                    + ", ".join(missing)
+                    + "."
+                )
+                return 1
+
+        timestamp = now_timestamp()
+        conn.execute(
+            "UPDATE notes SET timestamp = ?, category = ?, tags = ?, title = ?, content = ?"
+            " WHERE id = ?",
+            (timestamp, new_category, new_tags, new_title, new_content, note_id),
+        )
+        conn.commit()
+        print(f"✏️  Nota {note_id} atualizada em {timestamp} [{new_category}]")
+        print(f"   timestamp: {old_timestamp} → {timestamp}")
+        return 0
     finally:
         conn.close()
 
@@ -201,7 +280,7 @@ def search_notes(query: str, limit: int | None = None) -> list:
         rows: list | None = None
         if has_fts(conn):
             sql = (
-                "SELECT n.timestamp, n.category, n.tags, n.title, n.content"
+                "SELECT n.id, n.timestamp, n.category, n.tags, n.title, n.content"
                 " FROM notes n JOIN notes_fts f ON n.id = f.rowid"
                 " WHERE notes_fts MATCH ? ORDER BY n.timestamp DESC"
             )
@@ -217,7 +296,7 @@ def search_notes(query: str, limit: int | None = None) -> list:
         if not rows:  # sem FTS, erro no MATCH, ou zero resultados -> LIKE
             like = f"%{query}%"
             sql = (
-                "SELECT timestamp, category, tags, title, content FROM notes"
+                "SELECT id, timestamp, category, tags, title, content FROM notes"
                 " WHERE title LIKE ? OR content LIKE ? OR tags LIKE ? OR category LIKE ?"
                 " ORDER BY timestamp DESC"
             )
@@ -237,7 +316,7 @@ def list_notes(limit: int = DEFAULT_LIST_LIMIT) -> list:
     try:
         return _fetch(
             conn,
-            "SELECT timestamp, category, tags, title, content FROM notes"
+            "SELECT id, timestamp, category, tags, title, content FROM notes"
             " ORDER BY timestamp DESC LIMIT ?",
             [limit],
         )
@@ -248,10 +327,10 @@ def list_notes(limit: int = DEFAULT_LIST_LIMIT) -> list:
 def _print_rows(header: str, rows: list) -> None:
     print(header + "\n" + "=" * 50)
     for r in rows:
-        print(f"[{r[0]}] ({r[1]}) **{r[3]}**")
-        if r[2]:
-            print(f"Tags: {r[2]}")
-        print(f"Conteúdo:\n{r[4]}\n" + "-" * 50)
+        print(f"#{r[0]} [{r[1]}] ({r[2]}) **{r[4]}**")
+        if r[3]:
+            print(f"Tags: {r[3]}")
+        print(f"Conteúdo:\n{r[5]}\n" + "-" * 50)
 
 
 def print_search(query: str, limit: int | None = None) -> None:
@@ -360,7 +439,7 @@ def import_notes(path: str) -> int:
             if not title:
                 skipped += 1
                 continue
-            timestamp = n.get("timestamp") or datetime.now().strftime("%Y-%m-%d %H:%M")
+            timestamp = n.get("timestamp") or now_timestamp()
             category = normalize_category(n.get("category") or "#general")
             tags = n.get("tags") or ""
             dup = conn.execute(
@@ -527,6 +606,8 @@ def print_help() -> None:
 
 Uso:
   notes add "<categoria>" "<título>" "<tags>" "<conteúdo>"
+  notes update <id> [--title T] [--tags T] [--content C | --content-file F]
+                    [--category C]  # ÚLTIMO RECURSO: corrige informação conflitante
   notes search "<termo>" [limite]   # múltiplas palavras = OR
   notes list [limite]               # padrão: {DEFAULT_LIST_LIMIT}
   notes doctor                      # diagnóstico da máquina/banco
@@ -553,6 +634,48 @@ def main(argv: list[str]) -> int:
             print('Erro: "add" requer categoria, título, tags e conteúdo.')
             return 1
         add_note(argv[2], argv[3], argv[4], argv[5])
+    elif cmd == "update":
+        if len(argv) < 3:
+            print('Erro: "update" requer o id da nota.')
+            return 1
+        try:
+            note_id = int(argv[2])
+        except ValueError:
+            print(f'Erro: id inválido: {argv[2]!r}')
+            return 1
+        fields: dict[str, str] = {}
+        rest = argv[3:]
+        while rest:
+            flag = rest.pop(0)
+            if flag == "--content-file":
+                if not rest:
+                    print('Erro: "--content-file" requer um arquivo (ou "-").')
+                    return 1
+                src = rest.pop(0)
+                try:
+                    fields["content"] = (
+                        sys.stdin.read()
+                        if src == "-"
+                        else _read(os.path.expanduser(src))
+                    )
+                except OSError as exc:
+                    print(f"Erro: não foi possível ler {src}: {exc}")
+                    return 1
+                continue
+            key = {
+                "--title": "title",
+                "--tags": "tags",
+                "--content": "content",
+                "--category": "category",
+            }.get(flag)
+            if key is None:
+                print(f'Erro: opção desconhecida em "update": {flag}')
+                return 1
+            if not rest:
+                print(f'Erro: "{flag}" requer um valor.')
+                return 1
+            fields[key] = rest.pop(0)
+        return update_note(note_id, **fields)
     elif cmd == "search":
         if len(argv) < 3:
             print('Erro: "search" requer um termo de busca.')

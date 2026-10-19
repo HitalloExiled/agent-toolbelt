@@ -3,7 +3,8 @@
  *
  * Thin, typed wrapper over the global `notes` CLI, which lives in
  * ../memory/notes.py inside this repo. The wrapper exposes NO destructive
- * operation: only add / search / list / doctor.
+ * operation: only add / update / search / list / doctor. `update` is the only
+ * mutation of an existing note and exists to correct conflicting information.
  *
  * Safety:
  *  - execution via spawn with argv (no shell) => the note content is never
@@ -147,6 +148,88 @@ export const add = tool({
       title: `notes_add: ${category} — ${args.title}`,
       output: render(run),
       metadata: { category, exit: run.code },
+    };
+  },
+});
+
+export const update = tool({
+  description:
+    "LAST RESORT: correct an existing note whose content is now known to be wrong " +
+    "or conflicts with verified information. Do NOT use it to append new facts, " +
+    "reword for style, or erase history — save a new note instead. Only the fields " +
+    "you pass change; the timestamp is set to now, so the corrected note moves to " +
+    "the top. If the resulting note is category=problem, it still needs " +
+    "Symptom, Cause and Solution.",
+  args: {
+    id: tool.schema
+      .number()
+      .int()
+      .positive()
+      .describe("Note id, shown in [...] by notes_search / notes_list."),
+    title: tool.schema
+      .string()
+      .optional()
+      .describe("New title, only if the current one is wrong."),
+    content: tool.schema
+      .string()
+      .optional()
+      .describe("New content that replaces the wrong content."),
+    tags: tool.schema
+      .string()
+      .optional()
+      .describe("New space-separated keywords (empty string clears them)."),
+    category: tool.schema
+      .enum(CATEGORIES)
+      .optional()
+      .describe("New category, only if the note was filed wrongly."),
+  },
+  async execute(args) {
+    if (
+      args.title === undefined &&
+      args.content === undefined &&
+      args.tags === undefined &&
+      args.category === undefined
+    ) {
+      return {
+        title: "notes_update: refused",
+        output:
+          "❌ Nothing to update. Pass at least one of title/content/tags/category.\n" +
+          "If the goal is to record new information, use notes_add instead.",
+        metadata: { rejected: true },
+      };
+    }
+
+    if (args.title !== undefined && !args.title.trim()) {
+      return { title: "notes_update: refused", output: "❌ empty title." };
+    }
+    if (args.content !== undefined && !args.content.trim()) {
+      return { title: "notes_update: refused", output: "❌ empty content." };
+    }
+    if (args.category === "problem" && args.content !== undefined) {
+      const missing = missingProblemSections(args.content);
+      if (missing.length > 0) {
+        return {
+          title: "notes_update: refused (incomplete #problem note)",
+          output:
+            `❌ Note NOT updated. Missing from content: ${missing.join(", ")}.\n` +
+            "A #problem note needs a root cause and a reproducible solution.\n" +
+            "Format: Symptom: ... | Cause: ... | Solution: ... | Files: ... (optional)",
+          metadata: { rejected: true, missing },
+        };
+      }
+    }
+
+    const argv = ["update", String(args.id)];
+    if (args.title !== undefined) argv.push("--title", args.title);
+    if (args.tags !== undefined) argv.push("--tags", args.tags);
+    if (args.content !== undefined) argv.push("--content", args.content);
+    if (args.category !== undefined) argv.push("--category", `#${args.category}`);
+
+    const run = await runNb(argv);
+    return {
+      title: `notes_update: ${args.id}`,
+      output: render(run),
+      metadata: { id: args.id, exit: run.code },
     };
   },
 });
