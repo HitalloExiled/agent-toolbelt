@@ -101,7 +101,9 @@ tasks (started on demand); `./run.sh clean` removes it.
   rest; `egress=HOST` matches only traffic terminating on the host, so
   container→internet forwarding through the proxy is untouched. Install it once
   (root): `sudo sandbox/host-firewall.sh install-unit`; verify with
-  `sandbox/host-firewall.sh status`. `run.sh` warns when it is missing, and
+  `sandbox/host-firewall.sh status`. Once a session is running,
+  `sandbox/host-firewall.sh selftest` also asserts the relay is still reachable
+  through the guard, and `run.sh` warns when it is missing, with
   `SANDBOX_REQUIRE_FW_CHECK=1` turns that warning into a hard error. The policy
   covers the whole `docker` zone: the sandbox is the untrusted party and the
   other containers are deterministic. Keep model servers on `127.0.0.1`

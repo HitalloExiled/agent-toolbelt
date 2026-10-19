@@ -27,6 +27,7 @@
 # USAGE
 #   sudo ./host-firewall.sh install-unit   # one-time: persist + enable at boot
 #   sudo ./host-firewall.sh apply          # install now + self-test
+#   ./host-firewall.sh selftest            # re-check (no root); asserts the relay too
 #   ./host-firewall.sh status              # read-only, no root needed
 #   sudo ./host-firewall.sh remove         # remove rules/policy (keep unit)
 #   sudo ./host-firewall.sh uninstall-unit # disable + remove the unit
@@ -229,7 +230,12 @@ print(f"  host:{relay} -> {relay_state}" + ("" if expect_relay else " (relay dow
 ok = blocked == "timeout" and (not expect_relay or relay_state == "open")
 sys.exit(0 if ok else 1)
 ' "$gw" "$RELAY_PORT" "$expect_relay"; then
-    log "  ✅ blocked as expected; relay reachable"
+    if [ "$expect_relay" = 1 ]; then
+      log "  ✅ blocked as expected; relay reachable through the guard"
+    else
+      log "  ✅ blocked as expected — relay path NOT verified (no relay running)"
+      log "     start one (opencode-sb up / task) and re-run: $SELF selftest"
+    fi
     return 0
   fi
   warn "self-test FAILED — the guard is not effective (probes above)"
@@ -308,6 +314,12 @@ cmd_status() {
   fi
 }
 
+cmd_selftest() {
+  # No root needed: only docker access (group) and `ss` are used.
+  selftest || die "self-test failed — the guard is not behaving as expected"
+  log "✅ self-test passed"
+}
+
 cmd_install_unit() {
   require_root install-unit
   install -d -m 0755 "$(dirname "$LIB_PATH")"
@@ -362,9 +374,10 @@ usage() {
 case "${1:-status}" in
   apply)          shift; cmd_apply "$@" ;;
   remove)         shift; cmd_remove "$@" ;;
+  selftest)       cmd_selftest ;;
   status)         cmd_status ;;
   install-unit)   cmd_install_unit ;;
   uninstall-unit) cmd_uninstall_unit ;;
   -h|--help|help) usage ;;
-  *) die "unknown command: $1 (try: apply | remove | status | install-unit | uninstall-unit)" ;;
+  *) die "unknown command: $1 (try: apply | remove | selftest | status | install-unit | uninstall-unit)" ;;
 esac
