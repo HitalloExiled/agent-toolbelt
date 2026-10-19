@@ -49,6 +49,11 @@ BACKEND_PORT=18089
 RELAY_PORT=18090
 NO_PROXY_LIST="model-relay,host.docker.internal,127.0.0.1,localhost"
 
+# Written by sandbox/host-firewall.sh (root); world-readable so run.sh can
+# verify the guard without root.
+FW_STATE_FILE="/run/opencode-sandbox/host-firewall.state"
+FW_POLICY="opencode-sandbox-host-guard"
+
 CPUS="${CPUS:-4}"
 MEM="${MEM:-8g}"
 TIMEOUT="${TIMEOUT:-1800}"
@@ -237,6 +242,36 @@ start_proxy() { # $1 = name, $2 = sandbox (internal) network, $3 = conf file
     sleep 0.5
   done
   log "warning: proxy $1 did not confirm it is up; continuing anyway"
+}
+
+# The host-level guard (host-firewall.sh) is what stops sandbox containers from
+# reaching host services through the bridge gateway; run.sh cannot install it
+# (needs root), so it only reports when it is missing. Set
+# SANDBOX_REQUIRE_FW_CHECK=1 to make a missing guard fatal, or
+# SANDBOX_SKIP_FW_CHECK=1 to silence the check.
+host_firewall_preflight() {
+  [ "${SANDBOX_SKIP_FW_CHECK:-0}" = "1" ] && return 0
+
+  local ok=0
+  if command -v firewall-cmd >/dev/null 2>&1 && firewall-cmd --state >/dev/null 2>&1; then
+    firewall-cmd --get-policies 2>/dev/null | tr ' ' '\n' | grep -qx "$FW_POLICY" && ok=1
+  elif [ -f "$FW_STATE_FILE" ]; then
+    # No firewalld (iptables fallback): the state file is the root-free proof.
+    ok=1
+  fi
+
+  [ "$ok" = 1 ] && return 0
+
+  if [ "${SANDBOX_REQUIRE_FW_CHECK:-0}" = "1" ]; then
+    log "error: host firewall guard is not installed and SANDBOX_REQUIRE_FW_CHECK=1."
+    log "       install it once: sudo $ROOT/host-firewall.sh install-unit"
+    exit 1
+  fi
+  log "warning: host firewall guard is not installed."
+  log "         Sandbox containers can reach host services on the bridge gateway,"
+  log "         bypassing the audited proxy. Install it once (root):"
+  log "           sudo $ROOT/host-firewall.sh install-unit"
+  return 0
 }
 
 generate_config() { # $1 = out dir
@@ -604,6 +639,8 @@ cmd_task() {
     exit 2
   fi
 
+  host_firewall_preflight
+
   # Detached: hand off to a background copy of ourselves with a pre-seeded run
   # id, so the caller gets the id immediately and can follow with `watch`. The
   # child re-runs the same args but sees SANDBOX_RUNID set, so it skips this.
@@ -790,6 +827,7 @@ cmd_task() {
 
 cmd_up() {
   require_docker
+  host_firewall_preflight
   build_images
   ensure_network "$NETWORK" internal
 

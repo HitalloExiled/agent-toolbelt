@@ -114,6 +114,11 @@ Same rule: poll `peek --session`; leave `watch --session` to the human.
   the intended failure mode, and what makes the log trustworthy.
 - **`--sealed`:** no internet at all. Use when the task processes
   untrusted/malicious input or you must guarantee no exfiltration.
+- **Host services:** sandbox containers sit behind a host-level firewall guard
+  (`sandbox/host-firewall.sh`, one-time `sudo … install-unit`). Without it they
+  can reach anything the host binds to `0.0.0.0` through the bridge gateway;
+  with it, only the model-relay port is reachable. `run.sh` warns when the
+  guard is missing (`SANDBOX_REQUIRE_FW_CHECK=1` makes that fatal).
 
 ## Audit
 

@@ -91,11 +91,21 @@ tasks (started on demand); `./run.sh clean` removes it.
   uid 1000. Treat the sandbox as untrusted code with a strong container
   boundary: keep the output prefix a scratch dir, never point `COPY_IN` at
   secrets, and consider `userns-remap`/rootless Docker for stronger separation.
-- Caveat — the **bridge gateway is reachable**: any host service bound to
-  `0.0.0.0` (or the bridge IP) can be reached from the sandbox, bypassing the
-  proxy and the `proxy.log`. Keep model servers on `127.0.0.1` (as NInfer
-  already is) so they are only reachable through the relay, or add a
-  `DOCKER-USER` firewall rule.
+- **Host services are fenced off.** Sandbox containers sit on an `--internal`
+  bridge whose gateway *is* the host, so without a guard anything bound to
+  `0.0.0.0` (or the bridge IP) is reachable from the sandbox, bypassing the
+  proxy and the `proxy.log`. That traffic is local delivery, so it is filtered
+  in the host **`INPUT`** path — `DOCKER-USER`/`FORWARD` never sees it. The
+  guard installs a firewalld policy (`ingress=docker`, `egress=HOST`,
+  `target=DROP`) that permits only the model-relay port (`18090`) and drops the
+  rest; `egress=HOST` matches only traffic terminating on the host, so
+  container→internet forwarding through the proxy is untouched. Install it once
+  (root): `sudo sandbox/host-firewall.sh install-unit`; verify with
+  `sandbox/host-firewall.sh status`. `run.sh` warns when it is missing, and
+  `SANDBOX_REQUIRE_FW_CHECK=1` turns that warning into a hard error. The policy
+  covers the whole `docker` zone: the sandbox is the untrusted party and the
+  other containers are deterministic. Keep model servers on `127.0.0.1`
+  regardless.
 - Caveat: egress *is* enforced (an internal network plus a dual-homed proxy),
   so nothing leaves unlogged. But the proxy is still an allowed channel: a
   malicious task can deliberately exfiltrate data by POSTing it through the
@@ -237,6 +247,11 @@ So after a reboot, just run `opencode-sb` again — no manual cleanup needed.
 ```bash
 cd /home/rafael.franca/Projetos/My/agent-toolbelt/sandbox
 
+# One-time (root): stop sandbox containers from reaching host services through
+# the bridge gateway. Without it they can reach anything bound to 0.0.0.0.
+sudo ./host-firewall.sh install-unit
+./host-firewall.sh status          # read-only, no root
+
 # One-shot task, from anywhere once installed (builds images on first run)
 opencode-sb task \
   --model llama.cpp/qwen3.8-gguf-max \
@@ -365,6 +380,8 @@ proxy/tinyproxy.conf.in  proxy config template ({{SUBNET}} allow-list)
 relay/forward.py      localhost model relay (stdlib-only TCP forwarder)
 models.conf           model preference lists (free / local-large / local-parallel)
 run.sh                orchestrator engine (task / up / down / logs / models / clean)
+host-firewall.sh      root helper: firewalld policy fencing containers off from
+                      host services (apply / remove / status / install-unit)
 opencode-sandboxed    global CLI (tui / run / task / up / down / status / logs / models / clean)
 install.sh            installs the CLI symlinks (opencode-sandboxed, opencode-sb)
 ORCHESTRATION.md      playbook for a host agent that delegates to this sandbox
