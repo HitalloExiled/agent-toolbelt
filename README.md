@@ -6,7 +6,7 @@ Nasceu de dois subsistemas:
 - **`notes`** — memória de longa duração do agente (SQLite + FTS5 opcional),
   exposta como CLI global `notes` e como as tools `notes_add` /
   `notes_update` / `notes_confirm` / `notes_dispute` / `notes_retract` /
-  `notes_search` / `notes_doctor`.
+  `notes_history` / `notes_restore` / `notes_search` / `notes_doctor`.
 - **`sandbox`** — delegação de trabalho com risco para um container Docker
   descartável, via as tools `sandbox_run` / `sandbox_logs` / `sandbox_status`
   (wrapper do CLI `opencode-sb`, em `sandbox/`).
@@ -77,7 +77,8 @@ $XDG_DATA_HOME/opencode/memory/notes.db     # banco (estado; nunca versionado)
 | banco | `init_db()` |
 | `notes` (tabela) + índices | `schema.sql` |
 | `notes_fts` + shadow tables + triggers | `schema_fts.sql` (só se houver FTS5) |
-| `user_version` = `SCHEMA_VERSION` (hoje 2) | `SCHEMA_VERSION` em `notes.py` |
+| `user_version` = `SCHEMA_VERSION` (hoje 3) | `SCHEMA_VERSION` em `notes.py` |
+| `note_revisions` (histórico de `update`) | `migrations/003_note_revisions.sql` |
 | migrações `≥ 2` | `migrations/NNN_*.sql`, aplicadas por `user_version` |
 
 **Degradação:** se o `python3` da máquina não tiver FTS5, o CLI avisa e a busca
@@ -106,6 +107,8 @@ notes update <id> [--title T] [--tags T] [--content C | --content-file F]
 notes confirm <id>                 # ✔ reverifiquei: ainda vale (limpa disputa/retração)
 notes dispute <id> --why "<motivo>"    # ⚠ suspeita, sem correção ainda: mostrada por último
 notes retract <id> [--why "<motivo>"]  # 🚫 lixo/obsoleta: sai do search/list (reversível)
+notes history <id> [limite]        # versão atual + revisões (cada `update` guarda uma)
+notes restore <id> <rev>           # devolve o conteúdo de uma revisão (nada se perde)
 notes search "<termo>" [limite] [--all]  # todas as palavras (AND); sem match, OR
 notes list [limite] [--all]        # padrão 10; --all inclui retratadas
 notes doctor                       # python/sqlite, FTS5, schema, contagem, confiança
@@ -130,6 +133,13 @@ ordenam por último):
   `confirm`/`update` a trazem de volta e `--all` continua mostrando. Deletar
   segue sendo ação só do humano (`wipe`, ver abaixo).
 
+**Histórico de correção.** Todo `update` (e portanto `restore`) guarda o estado
+anterior da nota em `note_revisions` **antes** de reescrever: corrigir nunca
+perde o texto antigo. `notes history <id>` mostra a versão atual e as anteriores
+(`rev #N`); `notes restore <id> <rev>` devolve o conteúdo de uma delas — e como
+o restore também é um update, ele snapshota a versão atual primeiro, então dá
+para voltar atrás de novo. `export`/`import` carregam o histórico junto.
+
 **Manutenção destrutiva** (`wipe`) existe, mas exige TTY + confirmação
 digitada, não tem flag não-interativa, não aparece no help sem TTY e **não é
 exposta por nenhuma tool** — é para o humano, no terminal dele.
@@ -143,6 +153,8 @@ exposta por nenhuma tool** — é para o humano, no terminal dele.
 | `notes_confirm` | ✔ reverifica uma nota lida: ainda vale (limpa disputa/retração) |
 | `notes_dispute` | ⚠ marca uma nota como suspeita **sem** reescrevê-la (exige `why`) |
 | `notes_retract` | 🚫 esconde lixo/obsoleto do search/list (reversível; nada é apagado) |
+| `notes_history` | versão atual + revisões anteriores de uma nota (rev #N) |
+| `notes_restore` | devolve o conteúdo de uma revisão (a versão atual é guardada antes) |
 | `notes_search` | busca; sem `query`, lista as últimas (disputadas por último; retratadas ocultas) |
 | `notes_doctor` | diagnostica memória/schema/FTS5 e o estado de confiança |
 | `sandbox_run` | tarefa isolada; devolve resposta final, exit code e artefatos |

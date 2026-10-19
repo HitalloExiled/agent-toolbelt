@@ -22,7 +22,7 @@ import sys
 import unicodedata
 from datetime import datetime
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 HERE = os.path.dirname(os.path.realpath(__file__))
 SCHEMA_SQL = os.path.join(HERE, "schema.sql")
@@ -191,6 +191,31 @@ def note_columns(prefix: str = "") -> str:
     return ", ".join(f"{pre}{field}" for field in NOTE_FIELDS)
 
 
+def _load_note(conn: sqlite3.Connection, note_id: int):
+    return conn.execute(
+        f"SELECT {note_columns()} FROM notes WHERE id = ?", (note_id,)
+    ).fetchone()
+
+
+def _snapshot_revision(conn: sqlite3.Connection, note_id: int, revised_at: str, note_row) -> int:
+    """Guarda o estado ANTERIOR da nota em note_revisions. Devolve o id da revisão.
+
+    Chamado por `update` (e portanto por `restore`, que passa pelo mesmo caminho):
+    toda reescrita deixa o texto antigo recuperável. Só conteúdo + flags vão para
+    o snapshot — a revisão é o que a nota ERA.
+    """
+    (_, timestamp, category, tags, title, content,
+     verified_at, disputed_at, retracted_at, status_reason) = note_row
+    cur = conn.execute(
+        "INSERT INTO note_revisions (note_id, revised_at, timestamp, category, tags, title,"
+        " content, verified_at, disputed_at, retracted_at, status_reason)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (note_id, revised_at, timestamp, category, tags, title, content,
+         verified_at, disputed_at, retracted_at, status_reason),
+    )
+    return cur.lastrowid
+
+
 def add_note(category: str, title: str, tags: str, content: str) -> None:
     init_db()
     conn = _connect()
@@ -220,6 +245,9 @@ def update_note(
     para reescrever historico. Campos omitidos ficam como estao. Se a nota
     resultante for #problem, as secoes Symptom/Cause/Solution continuam
     obrigatorias.
+
+    Nada se perde: o estado anterior vai para `note_revisions` antes da
+    reescrita (veja `notes history` / `notes restore`).
     """
     if title is None and tags is None and content is None and category is None:
         print("Erro: 'update' requer ao menos um campo (--title/--tags/--content/--category).")
@@ -228,15 +256,14 @@ def update_note(
     init_db()
     conn = _connect()
     try:
-        row = conn.execute(
-            "SELECT timestamp, category, tags, title, content FROM notes WHERE id = ?",
-            (note_id,),
-        ).fetchone()
-        if row is None:
+        old = _load_note(conn, note_id)
+        if old is None:
             print(f"❌ Nota {note_id} não encontrada.")
             return 1
 
-        old_timestamp, old_category, old_tags, old_title, old_content = row
+        old_timestamp, old_category, old_tags, old_title, old_content = (
+            old[1], old[2], old[3], old[4], old[5],
+        )
         new_category = normalize_category(category) if category is not None else old_category
         new_tags = old_tags if tags is None else tags
         new_title = old_title if title is None else title
@@ -256,6 +283,8 @@ def update_note(
                 return 1
 
         timestamp = now_timestamp()
+        # Correcao sem perda: guarda o estado anterior ANTES de sobrescrever.
+        rev_id = _snapshot_revision(conn, note_id, timestamp, old)
         # Reescrever a nota a partir de evidencia e tambem um ato de verificacao:
         # marca verified_at e limpa disputa/retracao (a informacao mudou, entao
         # os avisos antigos nao valem mais).
@@ -268,16 +297,38 @@ def update_note(
         conn.commit()
         print(f"✏️  Nota {note_id} atualizada em {timestamp} [{new_category}]")
         print(f"   timestamp: {old_timestamp} → {timestamp}")
+        print(f"   🕓 versão anterior guardada como rev #{rev_id} — veja `notes history {note_id}`")
         print("   ✔ marcada como verificada; disputa/retração limpas (se havia)")
         return 0
     finally:
         conn.close()
 
 
-def _load_note(conn: sqlite3.Connection, note_id: int):
-    return conn.execute(
-        f"SELECT {note_columns()} FROM notes WHERE id = ?", (note_id,)
-    ).fetchone()
+def restore_note(note_id: int, revision_id: int) -> int:
+    """Traz de volta o CONTEÚDO de uma revisão anterior (não apaga nada).
+
+    É um `update` como qualquer outro: o estado atual vira uma nova revisão
+    antes da troca, então restaurar nunca perde o que havia. Só conteúdo/título/
+    tags/categoria da revisão voltam; as flags de confiança seguem a regra do
+    update (verified=agora, disputa/retração limpas).
+    """
+    init_db()
+    conn = _connect()
+    try:
+        rev = conn.execute(
+            "SELECT revised_at, category, tags, title, content FROM note_revisions"
+            " WHERE id = ? AND note_id = ?",
+            (revision_id, note_id),
+        ).fetchone()
+    finally:
+        conn.close()
+    if rev is None:
+        print(f"❌ Revisão #{revision_id} não encontrada para a nota {note_id}.")
+        print(f"   veja os ids válidos com `notes history {note_id}`.")
+        return 1
+    revised_at, category, tags, title, content = rev
+    print(f"↩️  Restaurando #{note_id} para a rev #{revision_id} (versão de {revised_at}):")
+    return update_note(note_id, title=title, tags=tags or "", content=content, category=category)
 
 
 def confirm_note(note_id: int) -> int:
@@ -493,6 +544,63 @@ def print_list(limit: int = DEFAULT_LIST_LIMIT, all: bool = False) -> None:
     _print_rows(f"📋 Últimas {len(rows)} nota(s):", rows)
 
 
+def _print_revision(row) -> None:
+    (rev_id, revised_at, timestamp, category, tags, title, content,
+     verified_at, disputed_at, retracted_at, status_reason) = row
+    print("=" * 50)
+    print(f"rev #{rev_id} — substituída em {revised_at} (valia desde {timestamp}) ({category}) **{title}**")
+    flags = []
+    if retracted_at:
+        flags.append(f"🚫 retracted {retracted_at}" + (f": {status_reason}" if status_reason else ""))
+    elif disputed_at:
+        flags.append(f"⚠ disputed {disputed_at}" + (f": {status_reason}" if status_reason else ""))
+    if verified_at:
+        flags.append(f"✔ verified {verified_at}")
+    if flags:
+        print("   " + " · ".join(flags))
+    if tags:
+        print(f"Tags: {tags}")
+    print(f"Conteúdo:\n{content}")
+
+
+def print_history(note_id: int, limit: int | None = None) -> int:
+    """Mostra o estado atual da nota e as versões anteriores (mais recente 1o)."""
+    init_db()
+    conn = _connect()
+    try:
+        note = _load_note(conn, note_id)
+        if note is None:
+            print(f"❌ Nota {note_id} não encontrada.")
+            return 1
+        sql = (
+            "SELECT id, revised_at, timestamp, category, tags, title, content,"
+            " verified_at, disputed_at, retracted_at, status_reason"
+            " FROM note_revisions WHERE note_id = ? ORDER BY id DESC"
+        )
+        params: list = [note_id]
+        if limit:
+            sql += " LIMIT ?"
+            params.append(limit)
+        revisions = _fetch(conn, sql, params)
+        total = conn.execute(
+            "SELECT COUNT(*) FROM note_revisions WHERE note_id = ?", (note_id,)
+        ).fetchone()[0]
+    finally:
+        conn.close()
+
+    _print_rows(f"📍 Nota #{note_id} — versão atual", [note])
+    if not revisions:
+        print(f"🕓 Sem revisões: esta nota nunca foi corrigida (total: {total}).")
+        return 0
+    shown = f"{len(revisions)} de {total}" if len(revisions) < total else str(total)
+    print(f"🕓 Histórico de #{note_id}: {shown} revisão(ões), mais recente primeiro")
+    for row in revisions:
+        _print_revision(row)
+    print("-" * 50)
+    print(f"↩️  restaurar uma versão: notes restore {note_id} <rev>")
+    return 0
+
+
 def reindex() -> int:
     """Reconstroi o indice FTS a partir da tabela notes."""
     init_db()
@@ -523,15 +631,42 @@ def export_notes(dest: str | None = None) -> int:
             f"SELECT {note_columns()} FROM notes ORDER BY id",
             [],
         )
+        rev_rows = _fetch(
+            conn,
+            "SELECT note_id, revised_at, timestamp, category, tags, title, content,"
+            " verified_at, disputed_at, retracted_at, status_reason"
+            " FROM note_revisions ORDER BY note_id, id",
+            [],
+        )
+        by_note: dict[int, list[dict]] = {}
+        for r in rev_rows:
+            by_note.setdefault(r[0], []).append(
+                {
+                    "revised_at": r[1],
+                    "timestamp": r[2],
+                    "category": r[3],
+                    "tags": r[4],
+                    "title": r[5],
+                    "content": r[6],
+                    "verified_at": r[7],
+                    "disputed_at": r[8],
+                    "retracted_at": r[9],
+                    "status_reason": r[10],
+                }
+            )
+        notes = []
+        for r in rows:
+            entry = dict(zip(NOTE_FIELDS, r))
+            revisions = by_note.get(r[0])
+            if revisions:
+                entry["revisions"] = revisions
+            notes.append(entry)
         payload = {
             "tool": "notes",
             "schema_version": SCHEMA_VERSION,
             "exported_at": datetime.now().isoformat(timespec="seconds"),
             "count": len(rows),
-            "notes": [
-                dict(zip(NOTE_FIELDS, r))
-                for r in rows
-            ],
+            "notes": notes,
         }
     finally:
         conn.close()
@@ -568,7 +703,7 @@ def import_notes(path: str) -> int:
     notes = _load_import_notes(path)
     init_db()
     conn = _connect()
-    added = skipped = 0
+    added = skipped = rev_added = 0
     try:
         for n in notes:
             title = (n.get("title") or "").strip()
@@ -587,7 +722,7 @@ def import_notes(path: str) -> int:
             if dup:
                 skipped += 1
                 continue
-            conn.execute(
+            cur = conn.execute(
                 "INSERT INTO notes (timestamp, category, tags, title, content,"
                 " verified_at, disputed_at, retracted_at, status_reason)"
                 " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -599,11 +734,38 @@ def import_notes(path: str) -> int:
                     n.get("status_reason") or None,
                 ),
             )
+            new_id = cur.lastrowid
+            for rev in n.get("revisions") or []:
+                if not isinstance(rev, dict):
+                    continue
+                conn.execute(
+                    "INSERT INTO note_revisions (note_id, revised_at, timestamp, category,"
+                    " tags, title, content, verified_at, disputed_at, retracted_at, status_reason)"
+                    " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        new_id,
+                        rev.get("revised_at") or timestamp,
+                        rev.get("timestamp") or timestamp,
+                        normalize_category(rev.get("category") or category),
+                        rev.get("tags") or "",
+                        (rev.get("title") or "").strip() or title,
+                        rev.get("content") or "",
+                        rev.get("verified_at") or None,
+                        rev.get("disputed_at") or None,
+                        rev.get("retracted_at") or None,
+                        rev.get("status_reason") or None,
+                    ),
+                )
+                rev_added += 1
             added += 1
         conn.commit()
     finally:
         conn.close()
-    print(f"📥 Import: {added} nota(s) adicionada(s), {skipped} ignorada(s) (vazia/duplicada).")
+    rev_note = f", {rev_added} revisão(ões)" if rev_added else ""
+    print(
+        f"📥 Import: {added} nota(s) adicionada(s), {skipped} ignorada(s)"
+        f" (vazia/duplicada){rev_note}."
+    )
     return 0
 
 
@@ -687,6 +849,10 @@ def doctor() -> int:
         print(f"confianca   : {verified} verificada(s), {disputed} disputada(s), {retracted} retratada(s)")
         if disputed:
             warn("há nota(s) disputada(s) — veja o aviso ⚠ na busca e corrija com `notes update`")
+        rev_count, rev_notes = conn.execute(
+            "SELECT COUNT(*), COUNT(DISTINCT note_id) FROM note_revisions"
+        ).fetchone()
+        print(f"histórico   : {rev_count} revisão(ões) em {rev_notes} nota(s) corrigida(s)")
         cats = conn.execute(
             "SELECT category, COUNT(*) FROM notes GROUP BY category ORDER BY 2 DESC"
         ).fetchall()
@@ -727,6 +893,9 @@ def wipe_notes() -> None:
             return
 
         print(f"⚠️  Esta ação apagará PERMANENTEMENTE {total} nota(s).")
+        rev_total = conn.execute("SELECT COUNT(*) FROM note_revisions").fetchone()[0]
+        if rev_total:
+            print(f"    (e {rev_total} revisão(ões) do histórico)")
         if input("Digite 'sim' para confirmar o wipe: ").strip().lower() not in (
             "sim",
             "yes",
@@ -736,9 +905,12 @@ def wipe_notes() -> None:
             return
 
         conn.execute("DELETE FROM notes")  # os triggers limpam o indice FTS
-        conn.execute("UPDATE sqlite_sequence SET seq = 0 WHERE name = 'notes'")
+        conn.execute("DELETE FROM note_revisions")
+        conn.execute(
+            "UPDATE sqlite_sequence SET seq = 0 WHERE name IN ('notes','note_revisions')"
+        )
         conn.commit()
-        print(f"🧹 Banco limpo: {total} nota(s) apagada(s).")
+        print(f"🧹 Banco limpo: {total} nota(s) e {rev_total} revisão(ões) apagada(s).")
     finally:
         conn.close()
 
@@ -765,6 +937,8 @@ Uso:
   notes confirm <id>                # ✔ reverifiquei: vale hoje (limpa disputa/retração)
   notes dispute <id> --why "<motivo>"   # ⚠ suspeita: mostrada, mas por último
   notes retract <id> [--why "<motivo>"] # 🚫 lixo/obsoleta: some do search/list (reversível)
+  notes history <id> [limite]       # versão atual + revisões (`update` guarda cada uma)
+  notes restore <id> <rev>          # traz o conteúdo de uma revisão de volta (nada se perde)
   notes search "<termo>" [limite] [--all]  # todas as palavras (AND); depois OR
   notes list [limite] [--all]       # padrão: {DEFAULT_LIST_LIMIT}; --all inclui retratadas
   notes doctor                      # diagnóstico da máquina/banco
@@ -858,6 +1032,28 @@ def main(argv: list[str]) -> int:
         if cmd == "dispute":
             return dispute_note(note_id, reason)
         return retract_note(note_id, reason)
+    elif cmd == "history":
+        if len(argv) < 3:
+            print('Erro: "history" requer o id da nota.')
+            return 1
+        try:
+            note_id = int(argv[2])
+        except ValueError:
+            print(f'Erro: id inválido: {argv[2]!r}')
+            return 1
+        limit = int(argv[3]) if len(argv) > 3 and argv[3].isdigit() else None
+        return print_history(note_id, limit)
+    elif cmd == "restore":
+        if len(argv) < 4:
+            print('Erro: "restore" requer o id da nota e o id da revisão (`notes history` mostra).')
+            return 1
+        try:
+            note_id = int(argv[2])
+            revision_id = int(argv[3])
+        except ValueError:
+            print(f'Erro: ids inválidos: {argv[2]!r} {argv[3]!r}')
+            return 1
+        return restore_note(note_id, revision_id)
     elif cmd == "search":
         args = argv[2:]
         all_flag = "--all" in args

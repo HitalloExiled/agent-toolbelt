@@ -3,9 +3,11 @@
  *
  * Thin, typed wrapper over the global `notes` CLI, which lives in
  * ../memory/notes.py inside this repo. The wrapper exposes NO destructive
- * operation: add / update / confirm / dispute / retract / search / list /
- * doctor. `update` and the trust flags change an existing note; `retract` only
- * hides it (reversible), nothing is ever deleted.
+ * operation: add / update / confirm / dispute / retract / history / restore /
+ * search / list / doctor. `update` and the trust flags change an existing note;
+ * `retract` only hides it (reversible); `restore` brings back an old revision.
+ * Nothing is ever deleted, and every `update`/`restore` keeps the previous
+ * version readable via `history`.
  *
  * Safety:
  *  - execution via spawn with argv (no shell) => the note content is never
@@ -161,7 +163,9 @@ export const update = tool({
     "you pass change; the timestamp is set to now, so the corrected note moves to " +
     "the top. If the resulting note is category=problem, it still needs " +
     "Symptom, Cause and Solution. Rewriting a note from evidence also marks it " +
-    "verified and clears any dispute/retraction (the old warnings no longer apply).",
+    "verified and clears any dispute/retraction (the old warnings no longer apply). " +
+    "Nothing is lost: the previous version is snapshotted and readable with " +
+    "notes_history, and can be brought back with notes_restore.",
   args: {
     id: tool.schema
       .number()
@@ -360,6 +364,66 @@ export const retract = tool({
       title: `notes_retract: ${args.id}`,
       output: render(run),
       metadata: { id: args.id, exit: run.code },
+    };
+  },
+});
+
+export const history = tool({
+  description:
+    "Show a note's version history: the current state plus every earlier version " +
+    "kept by notes_update / notes_restore (each snapshotted before it was rewritten). " +
+    "Use when a note looks wrong or you need the exact previous wording — the old " +
+    "content is never discarded. Each prior version is labelled rev #N.",
+  args: {
+    id: tool.schema
+      .number()
+      .int()
+      .positive()
+      .describe("Note id, shown as #NN by notes_search / notes_list."),
+    limit: tool.schema
+      .number()
+      .int()
+      .positive()
+      .optional()
+      .describe("Max earlier versions to show, newest first (default: all)."),
+  },
+  async execute(args) {
+    const argv = ["history", String(args.id)];
+    if (args.limit !== undefined) argv.push(String(args.limit));
+    const run = await runNb(argv);
+    return {
+      title: `notes_history: ${args.id}`,
+      output: render(run),
+      metadata: { id: args.id, exit: run.code },
+    };
+  },
+});
+
+export const restore = tool({
+  description:
+    "Bring back the content of an earlier version (rev #N from notes_history). This " +
+    "is itself an update: the current version is snapshotted first, so restoring " +
+    "never loses anything — you can always restore again. Use it to undo an earlier " +
+    "notes_update that turned out wrong. Only content/title/tags/category come back; " +
+    "the note is re-verified (dispute/retraction cleared).",
+  args: {
+    id: tool.schema
+      .number()
+      .int()
+      .positive()
+      .describe("Note id, shown as #NN by notes_search / notes_list."),
+    rev: tool.schema
+      .number()
+      .int()
+      .positive()
+      .describe("Revision id (rev #N) to restore, from notes_history."),
+  },
+  async execute(args) {
+    const run = await runNb(["restore", String(args.id), String(args.rev)]);
+    return {
+      title: `notes_restore: ${args.id} <- rev ${args.rev}`,
+      output: render(run),
+      metadata: { id: args.id, rev: args.rev, exit: run.code },
     };
   },
 });

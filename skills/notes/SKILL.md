@@ -1,6 +1,6 @@
 ---
 name: notes
-description: Long-term memory in SQLite (FTS5) via global CLI `notes` and tools `notes_add`/`notes_update`/`notes_confirm`/`notes_dispute`/`notes_retract`/`notes_search`/`notes_doctor`. Use to remember or recover decisions, configuration, snippets, and project context from previous sessions, and to record new notes — including the mandatory registration of resolved problems with symptom, cause, and solution. `notes_update` is a last resort, only to fix a note that is now known to be wrong or conflicts with verified information; `notes_confirm`/`notes_dispute` set the trust signal on a note read as-is, and `notes_retract` hides noise without deleting. Refer to it whenever the user asks what was decided/done before, asks for previous context, or before working on a project with history.
+description: Long-term memory in SQLite (FTS5) via global CLI `notes` and tools `notes_add`/`notes_update`/`notes_confirm`/`notes_dispute`/`notes_retract`/`notes_history`/`notes_restore`/`notes_search`/`notes_doctor`. Use to remember or recover decisions, configuration, snippets, and project context from previous sessions, and to record new notes — including the mandatory registration of resolved problems with symptom, cause, and solution. `notes_update` is a last resort, only to fix a note that is now known to be wrong or conflicts with verified information, and it keeps the previous version readable via `notes_history`/`notes_restore`; `notes_confirm`/`notes_dispute` set the trust signal on a note read as-is, and `notes_retract` hides noise without deleting. Refer to it whenever the user asks what was decided/done before, asks for previous context, or before working on a project with history.
 metadata:
   audience: any
   opencode/slash: "true"
@@ -20,10 +20,12 @@ Implementation and installation: repo **`agent-toolbelt`** (section `memory/`).
 |---|---|
 | `notes_search` | search / list recent notes (without `query` = list). Disputed notes show ⚠ and sort last; retracted ones are hidden unless `includeRetracted` |
 | `notes_add` | record a new note (validates the `#problem` format) |
-| `notes_update` | **last resort**: fix a note that is wrong or conflicts (moves its timestamp, re-verifies it) |
+| `notes_update` | **last resort**: fix a note that is wrong or conflicts (moves its timestamp, re-verifies it, snapshots the old version) |
 | `notes_confirm` | ✔ re-verified a note read as-is: it still holds (clears dispute/retraction) |
 | `notes_dispute` | ⚠ flag a note as suspect **without** rewriting it (needs `why`) |
 | `notes_retract` | 🚫 hide junk/obsolete noise from search/list (reversible, nothing is deleted) |
+| `notes_history` | read a note's current state + every earlier version (rev #N) |
+| `notes_restore` | bring back the content of an earlier rev #N (keeps the current one too) |
 | `notes_doctor` | diagnose memory/schema/FTS5 when something fails |
 
 Via terminal (or when tools are unavailable), the equivalent CLI:
@@ -37,6 +39,8 @@ notes update <id> [--title T] [--tags T] [--content C | --content-file F]
 notes confirm <id>                # re-verified: still valid (clears dispute/retraction)
 notes dispute <id> --why "<reason>"   # suspicious, but not corrected: shown last
 notes retract <id> [--why "<reason>"] # junk/obsolete: gone from search/list
+notes history <id> [limit]             # current state + earlier versions (rev #N)
+notes restore <id> <rev>               # bring back a rev's content (current kept)
 notes doctor                      # diagnosis
 ```
 
@@ -46,7 +50,7 @@ notes doctor                      # diagnosis
 - **Resolving a non-trivial problem**: register symptom → cause → solution (section below). This is the most important rule of the skill.
 - **Making important decisions** (architecture, trade-offs, non-obvious configuration): record with category `#decision`.
 - **Generating reusable snippets/configurations**: `#snippet` / `#config`.
-- **Never delete or overwrite the memory database.** If the user asks to clear the history, direct them to run maintenance manually in their own terminal — do not do it yourself, and these are not CLI commands exposed here. `notes_update` edits one note in place; it is not a wipe and it keeps no old copy.
+- **Never delete or overwrite the memory database.** If the user asks to clear the history, direct them to run maintenance manually in their own terminal — do not do it yourself, and these are not CLI commands exposed here. `notes_update` edits one note in place and snapshots the previous version (recoverable via `notes_history`/`notes_restore`); it is not a wipe.
 
 ## Registering solved problems (mandatory)
 
@@ -80,8 +84,10 @@ or when two notes contradict each other and one must be corrected.
   merely incomplete or outdated but not wrong, add a new note and let both
   stand with their dates.
 - **Correct, do not rewrite history.** Change only the fields that are wrong;
-  leave the rest. The old content is replaced and not kept, so do not use it
-  to "clean up" notes you disagree with.
+  leave the rest. The previous version is snapshotted automatically (read it
+  with `notes_history`, bring it back with `notes_restore`), but the point of
+  `update` is to record a *correction*, not to "clean up" notes you disagree
+  with — for suspicion without a fix, `dispute` is the right move.
 - **The timestamp moves to now.** After an update the note is stamped with the
   edit time (with seconds) and jumps to the top of `notes list`/search. That
   is intentional: it shows the correction is newer than the notes it
@@ -97,6 +103,26 @@ notes update 51 --content "Correction: the missing kv row was the cause; ..."
 notes update 51 --title "..." --tags "..."     # title/tags only
 printf '%s\n' "<new content>" | notes update 51 --content-file -
 ```
+
+### History: nothing is overwritten away
+
+Every `update` (and therefore `restore`) stores the note's previous state in
+`note_revisions` *before* rewriting it. Correction is therefore deletion-free:
+
+```bash
+notes history <id>        # current state + earlier versions, newest first (rev #N)
+notes restore <id> <rev>  # put an earlier version's content back
+```
+
+- `history` shows the live note and each prior version labelled `rev #N`, with
+  the moment it was superseded and the flags it carried then.
+- `restore` is just another update: it snapshots the current version first, so
+  restoring can never lose anything — you can always restore again.
+- Only content, title, tags and category come back; the note is re-verified
+  (dispute/retraction cleared), like any `update`.
+- `update` is still **not** for rewording or for appending facts — history is a
+  safety net, not a licence to churn. If nothing is wrong, add a note or
+  `confirm`.
 
 ## Trust: confirm, dispute, retract
 
@@ -146,6 +172,8 @@ The database is local state, not versioned. To carry memory between machines (or
 notes export ~/notes-backup.json    # or 'notes export -' for stdout
 notes import ~/notes-backup.json    # append, ignoring duplicates
 ```
+
+Each exported note carries its version history, and `import` restores it too, so a backup round-trips the whole correction trail (not just the current text).
 
 `notes reindex` rebuilds the FTS5 index if it goes out of sync (`notes doctor` warns when this happens).
 
