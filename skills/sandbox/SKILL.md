@@ -13,6 +13,8 @@ metadata:
 Global CLI: `opencode-sb` (alias of `opencode-sandboxed`).
 Project: this repo's `sandbox/` dir — `sandbox/README.md` and `sandbox/ORCHESTRATION.md` for full reference.
 
+The image also carries two tools the agent can use without any host access, documented by container-side skills that `run.sh` seeds for every task/session: **`webpage`** (headless Chromium — renders JS-gated pages, dumps DOM/text, screenshots/PDF) and **`ps4`** (shadPS4 on Xvfb + software Vulkan — boots a PS4 folder/ISO headlessly, logs, screenshots). When a page only renders with JS, ask for the `webpage` skill; do not conclude it is unreachable from a bare `curl`. For PS4 games, ask for the `ps4` skill. PS4 firmware is not bundled.
+
 ## How to orchestrate
 
 **Inside OpenCode, prefer the tools:**

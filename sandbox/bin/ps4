@@ -1,0 +1,208 @@
+#!/usr/bin/env bash
+# ps4 — run a PS4 game/ISO headlessly in the sandbox (shadPS4).
+#
+#   ps4 check                              Xvfb + software-Vulkan sanity check
+#   ps4 run PATH [options]                 run a game folder, eboot.bin, ISO or PKG
+#   ps4 version                            emulator build info
+#
+# PATH may be:
+#   * a game folder (or a folder containing eboot.bin, searched 3 levels deep)
+#   * a .iso: extracted with 7z into --work, then the eboot.bin folder is used
+#   * a .pkg: passed to the emulator as-is (installing a PKG is a GUI flow)
+#
+# Options:
+#   --timeout S       stop the emulator after S seconds (default 180)
+#   --shot FILE       screenshot path (default <out>/ps4-<name>.png)
+#   --shot-after S    when to grab the screenshot (default 30)
+#   --log FILE        emulator log (default <out>/ps4-<name>.log)
+#   --work DIR        where ISOs are extracted (default /tmp/ps4-work)
+#   --no-extract      never extract; pass PATH to the emulator unchanged
+#   --size WxH        virtual screen (default 1280x720)
+#
+# "Headless" here means: no GPU and no real display. Games run on Xvfb with
+# Mesa's software Vulkan (lavapipe), so expect very low frame rates — it is
+# for booting/testing, not for playing. PS4 firmware/system modules are NOT
+# bundled; games that need them will fail to boot until you provide them.
+set -euo pipefail
+
+BIN="${SHADPS4:-/opt/shadps4/AppRun}"
+SCREEN="${PS4_SCREEN:-1280x720x24}"
+OUT_DIR="${PS4_OUT:-/workspace/out}"
+[ -d "$OUT_DIR" ] || OUT_DIR="${TMPDIR:-/tmp}"
+
+die() { printf 'ps4: %s\n' "$*" >&2; exit 2; }
+say() { printf 'ps4: %s\n' "$*" >&2; }
+
+usage() { sed -n '3,30p' "$0" | sed 's/^# \{0,1\}//'; }
+
+need() { command -v "$1" >/dev/null 2>&1 || die "missing '$1' in the image (rebuild it)"; }
+
+sevenzip() {
+  for z in 7z 7za 7zr 7zz; do
+    command -v "$z" >/dev/null 2>&1 && { printf '%s' "$z"; return 0; }
+  done
+  return 1
+}
+
+[ -x "$BIN" ] || die "shadPS4 not found at $BIN (rebuild the sandbox image)"
+
+start_display() {
+  [ -n "${DISPLAY:-}" ] && return 0
+  need Xvfb
+  local n=99
+  while [ "$n" -ge 90 ]; do
+    if [ ! -e "/tmp/.X$n-lock" ]; then
+      Xvfb ":$n" -screen 0 "$SCREEN" -nolisten tcp >/dev/null 2>&1 &
+      XVFB_PID=$!
+      sleep 0.7
+      if kill -0 "$XVFB_PID" 2>/dev/null; then
+        export DISPLAY=":$n"
+        return 0
+      fi
+      kill "$XVFB_PID" 2>/dev/null || true
+    fi
+    n=$((n - 1))
+  done
+  die "could not start Xvfb (no free display in :90-:99)"
+}
+
+stop_display() {
+  [ -n "${XVFB_PID:-}" ] && kill "$XVFB_PID" 2>/dev/null || true
+}
+
+snapshot() { # $1 = png path
+  command -v xwd >/dev/null 2>&1 || return 0
+  command -v xwdtopnm >/dev/null 2>&1 || return 0
+  command -v pnmtopng >/dev/null 2>&1 || return 0
+  xwd -root -silent 2>/dev/null | xwdtopnm 2>/dev/null | pnmtopng >"$1" 2>/dev/null || true
+  [ -s "$1" ] || rm -f "$1"
+}
+
+cmd_check() {
+  local rc=0
+  mkdir -p "$HOME/.local/share"
+  printf 'shadPS4 : '
+  if [ -x "$BIN" ]; then
+    "$BIN" --help 2>/dev/null | head -1 || true
+  else
+    echo "MISSING"; rc=1
+  fi
+  for t in Xvfb xwd xwdtopnm pnmtopng; do
+    printf '%-8s: ' "$t"
+    command -v "$t" >/dev/null 2>&1 && echo "$(command -v "$t")" || { echo MISSING; rc=1; }
+  done
+  printf '%-8s: ' 7z
+  if z="$(sevenzip)"; then echo "$(command -v "$z")"; else echo MISSING; rc=1; fi
+  start_display
+  trap stop_display EXIT
+  printf 'display : %s\n' "$DISPLAY"
+  if command -v vulkaninfo >/dev/null 2>&1; then
+    printf 'vulkan  : '
+    vulkaninfo --summary 2>/dev/null | awk -F'= ' '/deviceName|driverName/ {printf "%s ", $2} END {print ""}'
+  else
+    echo 'vulkan  : vulkaninfo MISSING'; rc=1
+  fi
+  return "$rc"
+}
+
+resolve_game() { # $1 = path, $2 = work dir
+  local path="$1" work="$2" found
+  [ -e "$path" ] || die "no such path: $path"
+  case "$path" in
+    *.iso)
+      local z
+      z="$(sevenzip)" || die "missing 7z/7za in the image (rebuild it)"
+      local dest="$work/$(basename "$path" .iso)"
+      if [ ! -d "$dest" ]; then
+        say "extracting $(basename "$path") -> $dest"
+        mkdir -p "$dest"
+        "$z" x -y -o"$dest" "$path" >/dev/null || die "$z could not extract $path"
+      fi
+      path="$dest"
+      ;;
+    *.pkg) printf '%s' "$path"; return 0 ;;
+  esac
+  if [ -d "$path" ]; then
+    if [ -f "$path/eboot.bin" ]; then printf '%s' "$path"; return 0; fi
+    found="$(find "$path" -maxdepth 3 -name eboot.bin -print -quit 2>/dev/null || true)"
+    if [ -n "$found" ]; then printf '%s' "$(dirname "$found")"; return 0; fi
+    say "no eboot.bin under $path; handing the folder to the emulator anyway"
+    printf '%s' "$path"
+    return 0
+  fi
+  if [ "$(basename "$path")" = eboot.bin ]; then printf '%s' "$(dirname "$path")"; return 0; fi
+  printf '%s' "$path"
+}
+
+cmd_run() {
+  local path="" timeout="180" shot="" shot_after="30" log="" work="/tmp/ps4-work" no_extract=0
+
+  [ $# -ge 1 ] || { usage; exit 2; }
+  path="$1"; shift
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --timeout)    timeout="${2:?}"; shift 2 ;;
+      --shot)       shot="${2:?}"; shift 2 ;;
+      --shot-after) shot_after="${2:?}"; shift 2 ;;
+      --log)        log="${2:?}"; shift 2 ;;
+      --work)       work="${2:?}"; shift 2 ;;
+      --size)       SCREEN="${2:?}"; shift 2 ;;
+      --no-extract) no_extract=1; shift ;;
+      -*)           die "unknown option: $1" ;;
+      *)            die "unexpected argument: $1" ;;
+    esac
+  done
+
+  local name game
+  name="$(basename "$path")"; name="${name%.*}"
+  log="${log:-$OUT_DIR/ps4-$name.log}"
+  shot="${shot:-$OUT_DIR/ps4-$name.png}"
+  mkdir -p "$(dirname "$log")" "$(dirname "$shot")" "$work"
+
+  if [ -f "$path" ] && [ "$(stat -c %s "$path")" -gt 2000000000 ] 2>/dev/null; then
+    say "warning: $(basename "$path") is >2GB; extraction needs that much space in $work"
+  fi
+
+  if [ "$no_extract" = 1 ]; then game="$path"; else game="$(resolve_game "$path" "$work")"; fi
+  say "game: $game"
+
+  # shadPS4 needs its data dir's parent to exist.
+  mkdir -p "$HOME/.local/share"
+
+  start_display
+  trap 'stop_display' EXIT
+
+  # Grab a frame while the game is (hopefully) rendering.
+  ( sleep "$shot_after"; snapshot "$shot" ) &
+  local snap_pid=$!
+
+  say "log : $log"
+  set +e
+  timeout "$timeout" "$BIN" -g "$game" 2>&1 | tee "$log"
+  local rc=${PIPESTATUS[0]}
+  set -e
+
+  kill "$snap_pid" 2>/dev/null || true
+  snapshot "$shot" || true
+
+  if [ -s "$shot" ]; then say "shot: $shot"; else say "shot: none (nothing rendered yet)"; fi
+  if [ "$rc" = 124 ]; then
+    say "stopped after ${timeout}s (timeout)"
+  else
+    say "emulator exit: $rc"
+  fi
+  if grep -qiE 'firmware|sysmodule(s)? (not|missing)|module.*(not found|missing)' "$log" 2>/dev/null; then
+    say "hint: PS4 firmware/system modules are not bundled — install them for games that need them"
+  fi
+  return 0
+}
+
+cmd="${1:-}"
+[ $# -gt 0 ] && shift
+case "$cmd" in
+  check)   cmd_check ;;
+  run)     cmd_run "$@" ;;
+  version) mkdir -p "$HOME/.local/share"; "$BIN" --help 2>/dev/null | head -1 || true ;;
+  -h|--help|help|"") usage ;;
+  *) die "unknown command: $cmd (try: ps4 check | ps4 run PATH)" ;;
+esac

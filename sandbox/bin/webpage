@@ -1,0 +1,111 @@
+#!/usr/bin/env bash
+# webpage — headless Chromium with JavaScript, for the sandbox.
+#
+#   webpage dom  URL [--wait MS] [--size WxH]   final DOM after JS settles
+#   webpage text URL [--wait MS] [--size WxH]   visible text after JS settles
+#   webpage shot URL FILE [--wait MS] [--size WxH]
+#   webpage pdf  URL FILE [--wait MS] [--size WxH]
+#   webpage version
+#
+# Uses Chromium's headless shell (no display, no GPU). --no-sandbox is safe
+# here: the container is the security boundary (read-only rootfs, dropped
+# caps, no privilege escalation) and this browser is meant to load untrusted
+# pages inside it.
+#
+# Chromium ignores the usual HTTP(S)_PROXY variables, so the sandbox egress
+# proxy is passed explicitly with --proxy-server.
+set -euo pipefail
+
+BIN="${CHROMIUM:-/usr/lib64/chromium-browser/headless_shell}"
+DEFAULT_WAIT_MS="${WEBPAGE_WAIT_MS:-3000}"
+
+die() { printf 'webpage: %s\n' "$*" >&2; exit 2; }
+
+[ -x "$BIN" ] || die "headless Chromium not found at $BIN (rebuild the sandbox image)"
+
+usage() { sed -n '3,10p' "$0" | sed 's/^# \{0,1\}//'; }
+
+cmd="${1:-}"
+[ $# -gt 0 ] && shift
+[ -n "$cmd" ] || { usage; exit 2; }
+
+if [ "$cmd" = version ]; then
+  "$BIN" --version
+  exit 0
+fi
+
+[ $# -ge 1 ] || die "missing URL"
+url="$1"; shift
+case "$url" in
+  http://*|https://*|file://*|data:*) ;;
+  *) die "unsupported URL scheme (use http, https, file or data)" ;;
+esac
+
+wait_ms="$DEFAULT_WAIT_MS"
+size="1280,900"
+out=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --wait) wait_ms="${2:?--wait needs milliseconds}"; shift 2 ;;
+    --size) size="${2:?--size needs WxH}"; shift 2 ;;
+    --) shift; break ;;
+    *) out="$1"; shift ;;
+  esac
+done
+
+# A private profile per invocation: the runtime /home is tmpfs and the image
+# must not carry state.
+profile="$(mktemp -d "${TMPDIR:-/tmp}/webpage.XXXXXX")"
+trap 'rm -rf "$profile"' EXIT
+
+args=(
+  --no-sandbox
+  --disable-gpu
+  --disable-dev-shm-usage
+  --user-data-dir="$profile"
+  --no-first-run
+  --no-default-browser-check
+  --disable-extensions
+  --disable-background-networking
+  --disable-sync
+  --hide-scrollbars
+  --virtual-time-budget="$wait_ms"
+  --window-size="$size"
+)
+
+proxy="${HTTPS_PROXY:-${https_proxy:-${HTTP_PROXY:-${http_proxy:-}}}}"
+[ -n "$proxy" ] && args+=(--proxy-server="$proxy")
+
+run() { timeout "${WEBPAGE_TIMEOUT:-90}" "$BIN" "${args[@]}" "$@" 2>/dev/null; }
+
+case "$cmd" in
+  dom)
+    run --dump-dom "$url"
+    ;;
+  text)
+    run --dump-dom "$url" | python3 -c '
+import html, re, sys
+s = sys.stdin.read()
+s = re.sub(r"(?is)<(script|style|noscript|template)[^>]*>.*?</\1>", " ", s)
+s = re.sub(r"(?s)<[^>]+>", " ", s)
+s = re.sub(r"[ \t\r\f\v]+", " ", html.unescape(s))
+print("\n".join(line.strip() for line in s.splitlines() if line.strip()))
+'
+    ;;
+  shot)
+    [ -n "$out" ] || die "shot needs an output file: webpage shot URL FILE"
+    run --screenshot="$out" "$url" >/dev/null
+    [ -s "$out" ] || die "screenshot failed (no bytes written)"
+    printf 'wrote %s (%s bytes)\n' "$out" "$(stat -c %s "$out")" >&2
+    ;;
+  pdf)
+    [ -n "$out" ] || die "pdf needs an output file: webpage pdf URL FILE"
+    run --print-to-pdf="$out" --no-pdf-header-footer "$url" >/dev/null
+    [ -s "$out" ] || die "pdf failed (no bytes written)"
+    printf 'wrote %s (%s bytes)\n' "$out" "$(stat -c %s "$out")" >&2
+    ;;
+  *)
+    usage
+    exit 2
+    ;;
+esac

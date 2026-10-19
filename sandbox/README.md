@@ -202,7 +202,7 @@ It resolves symlinks, so it works from any directory:
 (`opencode-sandbox-session`). `opencode-sb up` is idempotent:
 
 - **running** — reused as-is; the proxy and relay are re-checked, and the
-  seeded config is re-written if it went missing.
+  seeded config and skills are re-written if they went missing.
 - **stopped or absent** (e.g. after a reboot, which stops containers but does
   not remove them) — the container is **removed and recreated**, because a
   stopped container has already lost its tmpfs state (seeded config,
@@ -238,6 +238,40 @@ opencode-sb logs <run-id>            # or: ./run.sh logs <run-id>
 
 opencode-sb clean            # remove orphaned containers
 ```
+
+## Tools in the image
+
+The worker is not just OpenCode: it carries a small offline tool set so the
+sandboxed agent can do what a plain HTTP fetch cannot.
+
+| Command | What it is |
+|---|---|
+| `webpage text\|dom\|shot\|pdf URL …` | headless Chromium (JavaScript on, proxy-aware) |
+| `ps4 check\|run PATH …` | shadPS4 on Xvfb + Mesa software Vulkan (lavapipe) |
+| `7z`/`7za`, `Xvfb`, `xwd`, `pnmtopng` | the pieces the two wrappers build on |
+
+**`webpage`** renders one URL per call and prints the DOM/text or writes a
+PNG/PDF: `--wait MS` is the virtual time budget for scripts (default 3000).
+Chromium ignores `HTTP(S)_PROXY`, so the wrapper passes `--proxy-server` from
+`HTTPS_PROXY` itself; under `--sealed` only `data:`/`file:` URLs work.
+
+**`ps4`** boots a game folder, `eboot.bin`, `.iso` (extracted with 7z) or
+`.pkg` with no GPU and no display. It starts Xvfb, runs shadPS4 against
+lavapipe, stops after `--timeout` (default 180s) and writes the emulator log
+plus a screenshot to `/workspace/out`. PS4 firmware/system modules are **not**
+bundled, so most commercial games stop early — report the log, not a verdict.
+
+Both are documented to the sandbox agent by the skills in `skills/` here
+(`webpage`, `ps4`). They are streamed into
+`/home/sandbox/.config/opencode/skills/` for every task and session; the
+generated config opens the `skill` permission because the host config denies
+all skills except its own allowlist, and no host skill is copied in.
+
+Web search also needs one line of state: OpenCode stores its provider choice
+in SQLite (`websearch:provider`, e.g. `"random"`). A fresh sandbox DB has no
+such row, so `websearch` fails with `Web search cancelled`. `run.sh` copies
+the value from the host DB (override with `SANDBOX_WEBSEARCH_PROVIDER`,
+default `random`) after OpenCode creates its database.
 
 ## Models
 
@@ -297,6 +331,9 @@ Exit code: `0` success, `124` timeout, other = task failed.
 ```
 Dockerfile            worker image (fedora:44 + OpenCode; latest, or pinned via
                       --build-arg OPENCODE_VERSION=…)
+bin/webpage           headless-Chromium wrapper (JS-capable page read/shot/pdf)
+bin/ps4               shadPS4 wrapper (Xvfb + lavapipe, ISO extraction, shot/log)
+skills/<id>/SKILL.md  container-side skills (webpage, ps4) seeded per task/session
 proxy/Dockerfile      tinyproxy logging proxy image
 proxy/tinyproxy.conf.in  proxy config template ({{SUBNET}} allow-list)
 relay/forward.py      localhost model relay (stdlib-only TCP forwarder)

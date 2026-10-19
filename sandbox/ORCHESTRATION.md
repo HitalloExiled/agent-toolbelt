@@ -63,6 +63,12 @@ directory.
   `--model` is omitted the sandbox picks a mode-aware default (free online,
   `single192` for `--sealed`). The catalog changes between OpenCode releases —
   validate the preferred refs with `opencode-sb models --check`.
+- **Tools inside the sandbox.** Besides a shell, the image carries `webpage`
+  (headless Chromium with JavaScript) and `ps4` (shadPS4 on Xvfb + software
+  Vulkan). The agent discovers them through the seeded `webpage` and `ps4`
+  skills. Point at the skill, not just the binary: "load the `webpage` skill
+  and read <URL>" / "load the `ps4` skill, boot /workspace/game.iso, report the
+  log". There is no host browser or GPU to ask for.
 - **Getting files back onto the host.** Always read the dir named by
   `runs/<run-id>/hostout` (`SANDBOX_OUT_ROOT/<run-id>/`, default `~/.sandbox`).
   It is a **real rw host mount**: the untrusted agent can write/overwrite/delete

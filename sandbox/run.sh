@@ -230,8 +230,48 @@ generate_config() { # $1 = out dir
     log "  (override with OPENCODE_HOST_CONFIG=...)"
     exit 1
   fi
+  # The sandbox talks to the model relay instead of the host's loopback providers.
   sed "s|127\\.0\\.0\\.1:${BACKEND_PORT}|model-relay:${RELAY_PORT}|g" \
     "$HOST_CONFIG" > "$1/opencode.jsonc"
+
+  # The host config denies every skill except an allowlist. The sandbox ships
+  # its own skills (webpage, ps4) and no host skills are copied in, so open the
+  # skill permission up for the sandbox copy. Rewriting as plain JSON is fine:
+  # this file is generated, not hand-edited.
+  python3 - "$1/opencode.jsonc" <<'PY' || true
+import json, re, sys
+p = sys.argv[1]
+src = open(p).read()
+out, i, n = [], 0, len(src)
+while i < n:
+    c = src[i]
+    if c == '"':                       # copy strings verbatim
+        j = i + 1
+        while j < n:
+            if src[j] == "\\":
+                j += 2
+                continue
+            if src[j] == '"':
+                break
+            j += 1
+        out.append(src[i:j + 1])
+        i = j + 1
+    elif src.startswith("//", i):       # line comment
+        j = src.find("\n", i)
+        i = n if j < 0 else j
+    elif src.startswith("/*", i):       # block comment
+        j = src.find("*/", i)
+        i = n if j < 0 else j + 2
+    else:
+        out.append(c)
+        i += 1
+text = re.sub(r",(\s*[}\]])", r"\1", "".join(out))
+cfg = json.loads(text)
+for rule in cfg.get("permissions") or []:
+    if isinstance(rule, dict) and rule.get("action") == "skill":
+        rule["effect"] = "allow"
+open(p, "w").write(json.dumps(cfg, indent=2) + "\n")
+PY
 }
 
 # File transfer uses `docker exec` stdio streaming, never `docker cp`:
@@ -410,6 +450,63 @@ worker_env() { # $1 = proxy name (empty for sealed)
     )
   fi
   printf '%s\n' "${env[@]}"
+}
+
+# OpenCode keeps the websearch provider choice in its SQLite kv, not in the
+# config: the desktop app writes `websearch:provider` on the host, so a fresh
+# sandbox DB has no such row and every search fails with "Web search
+# cancelled". Mirror the host's choice (falling back to "random", OpenCode's
+# own default). It is state, so it must be written after the DB exists.
+websearch_provider() {
+  local v="${SANDBOX_WEBSEARCH_PROVIDER:-}"
+  if [ -z "$v" ]; then
+    v="$(python3 - "$HOME/.local/share/opencode/opencode.db" <<'PY' 2>/dev/null || true
+import json, os, sqlite3, sys
+p = sys.argv[1]
+if os.path.exists(p):
+    try:
+        c = sqlite3.connect(f"file:{p}?mode=ro", uri=True)
+        row = c.execute("select value from kv where key='websearch:provider'").fetchone()
+        if row:
+            print(json.loads(row[0]))
+    except Exception:
+        pass
+PY
+)"
+  fi
+  printf '%s' "${v:-random}"
+}
+
+seed_state() { # $1 = container name
+  local c="$1" provider
+  provider="$(websearch_provider)"
+  # Let OpenCode create/migrate its DB, then set the row (idempotent, ~0.3s).
+  docker exec "$c" opencode api --standalone GET /api/config >/dev/null 2>&1 || true
+  docker exec -i "$c" python3 - "$provider" >/dev/null 2>&1 <<'PY' || true
+import json, os, sqlite3, sys, time
+p = os.path.expanduser("~/.local/share/opencode/opencode.db")
+if not os.path.exists(p):
+    raise SystemExit(0)
+c = sqlite3.connect(p)
+now = int(time.time() * 1000)
+c.execute(
+    "insert into kv(key, value, time_created, time_updated) values(?, ?, ?, ?) "
+    "on conflict(key) do update set value=excluded.value, time_updated=excluded.time_updated",
+    ("websearch:provider", json.dumps(sys.argv[1]), now, now))
+c.commit()
+PY
+}
+
+# The sandbox agent only knows what it can discover, so seed the skills that
+# document the image's own tools (webpage, ps4) into its config dir.
+seed_skills() { # $1 = container name
+  local c="$1" dir name
+  for dir in "$ROOT"/skills/*/; do
+    [ -f "$dir/SKILL.md" ] || continue
+    name="$(basename "$dir")"
+    stream_file_into "$c" "$dir/SKILL.md" \
+      "/home/sandbox/.config/opencode/skills/$name/SKILL.md"
+  done
 }
 
 # Resolve the FIXED host output root. The sandbox always writes its
@@ -591,6 +688,8 @@ cmd_task() {
   docker start "$sandbox" >/dev/null
   stream_file_into "$sandbox" "$run_dir/config/opencode.jsonc" \
     /home/sandbox/.config/opencode/opencode.jsonc
+  seed_state "$sandbox"
+  seed_skills "$sandbox"
 
   for src in "${copy_in[@]}"; do
     if [ ! -e "$src" ]; then
@@ -693,6 +792,11 @@ cmd_up() {
     if ! container_has "$SESSION" "$SESSION_CONFIG"; then
       log "session config missing; re-seeding it"
       stream_file_into "$SESSION" "$cfgdir/opencode.jsonc" "$SESSION_CONFIG"
+      seed_state "$SESSION"
+      seed_skills "$SESSION"
+    fi
+    if ! container_has "$SESSION" "/home/sandbox/.config/opencode/skills/webpage/SKILL.md"; then
+      seed_skills "$SESSION"
     fi
     log "session $SESSION already running"
     log "  attach: opencode-sandboxed   (or: docker exec -it $SESSION opencode)"
@@ -729,6 +833,8 @@ cmd_up() {
     "$WORKER_IMAGE" infinity >/dev/null
   docker start "$SESSION" >/dev/null
   stream_file_into "$SESSION" "$cfgdir/opencode.jsonc" "$SESSION_CONFIG"
+  seed_state "$SESSION"
+  seed_skills "$SESSION"
 
   log "session up: $SESSION"
   log "  out   : $out_dir/ (host)"
