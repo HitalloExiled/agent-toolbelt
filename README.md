@@ -5,7 +5,8 @@ Nasceu de dois subsistemas:
 
 - **`notes`** — memória de longa duração do agente (SQLite + FTS5 opcional),
   exposta como CLI global `notes` e como as tools `notes_add` /
-  `notes_update` / `notes_search` / `notes_doctor`.
+  `notes_update` / `notes_confirm` / `notes_dispute` / `notes_retract` /
+  `notes_search` / `notes_doctor`.
 - **`sandbox`** — delegação de trabalho com risco para um container Docker
   descartável, via as tools `sandbox_run` / `sandbox_logs` / `sandbox_status`
   (wrapper do CLI `opencode-sb`, em `sandbox/`).
@@ -76,7 +77,7 @@ $XDG_DATA_HOME/opencode/memory/notes.db     # banco (estado; nunca versionado)
 | banco | `init_db()` |
 | `notes` (tabela) + índices | `schema.sql` |
 | `notes_fts` + shadow tables + triggers | `schema_fts.sql` (só se houver FTS5) |
-| `user_version` = 1 | `SCHEMA_VERSION` em `notes.py` |
+| `user_version` = `SCHEMA_VERSION` (hoje 2) | `SCHEMA_VERSION` em `notes.py` |
 | migrações `≥ 2` | `migrations/NNN_*.sql`, aplicadas por `user_version` |
 
 **Degradação:** se o `python3` da máquina não tiver FTS5, o CLI avisa e a busca
@@ -102,9 +103,12 @@ notes import ~/notes-backup.json   # append, ignorando duplicadas
 notes add "<categoria>" "<título>" "<tags>" "<conteúdo>"
 notes update <id> [--title T] [--tags T] [--content C | --content-file F]
                   [--category C]   # ÚLTIMO RECURSO: corrige informação conflitante
-notes search "<termo>" [limite]    # múltiplas palavras = OR
-notes list [limite]                # padrão 10
-notes doctor                       # python/sqlite, FTS5, schema, contagem, índice
+notes confirm <id>                 # ✔ reverifiquei: ainda vale (limpa disputa/retração)
+notes dispute <id> --why "<motivo>"    # ⚠ suspeita, sem correção ainda: mostrada por último
+notes retract <id> [--why "<motivo>"]  # 🚫 lixo/obsoleta: sai do search/list (reversível)
+notes search "<termo>" [limite] [--all]  # todas as palavras (AND); sem match, OR
+notes list [limite] [--all]        # padrão 10; --all inclui retratadas
+notes doctor                       # python/sqlite, FTS5, schema, contagem, confiança
 notes init                         # cria/atualiza (idempotente)
 notes export [arquivo|-]           # JSON
 notes import <arquivo|->           # JSON
@@ -113,6 +117,18 @@ notes reindex                      # reconstrói o índice FTS5
 
 Categorias: `#problem`, `#decision`, `#config`, `#snippet`, `#architecture`,
 `#general`. Tags sem `#`. Variável de ambiente: `NOTES_DB` (caminho do banco).
+
+**Confiança numa nota** (a busca mostra a marca sob a nota; disputadas sempre
+ordenam por último):
+
+- `confirm` — li a nota, conferi, ainda vale. É o sinal positivo e barato; limpa
+  qualquer disputa/retração. Prefira isso a escrever uma nota "continua valendo".
+- `dispute` — desconfio que está errada **e não tenho a correção**. A próxima
+  leitura vê o ⚠ com o motivo. Com a correção em mãos, use `update` (que resolve
+  a disputa e re-verifica).
+- `retract` — lixo/teste/obsoleto: some do search/list sem apagar nada;
+  `confirm`/`update` a trazem de volta e `--all` continua mostrando. Deletar
+  segue sendo ação só do humano (`wipe`, ver abaixo).
 
 **Manutenção destrutiva** (`wipe`) existe, mas exige TTY + confirmação
 digitada, não tem flag não-interativa, não aparece no help sem TTY e **não é
@@ -123,8 +139,12 @@ exposta por nenhuma tool** — é para o humano, no terminal dele.
 | Tool | O que faz |
 |---|---|
 | `notes_add` | grava uma nota; **recusa** `#problem` sem Sintoma/Causa/Solução |
-| `notes_search` | busca; sem `query`, lista as últimas |
-| `notes_doctor` | diagnostica memória/schema/FTS5 |
+| `notes_update` | **último recurso**: corrige uma nota errada/conflitante (re-verifica) |
+| `notes_confirm` | ✔ reverifica uma nota lida: ainda vale (limpa disputa/retração) |
+| `notes_dispute` | ⚠ marca uma nota como suspeita **sem** reescrevê-la (exige `why`) |
+| `notes_retract` | 🚫 esconde lixo/obsoleto do search/list (reversível; nada é apagado) |
+| `notes_search` | busca; sem `query`, lista as últimas (disputadas por último; retratadas ocultas) |
+| `notes_doctor` | diagnostica memória/schema/FTS5 e o estado de confiança |
 | `sandbox_run` | tarefa isolada; devolve resposta final, exit code e artefatos |
 | `sandbox_logs` | audita a rede (`proxy.log`) de um run |
 | `sandbox_status` | estado dos containers do sandbox |

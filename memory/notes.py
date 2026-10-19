@@ -22,7 +22,7 @@ import sys
 import unicodedata
 from datetime import datetime
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 HERE = os.path.dirname(os.path.realpath(__file__))
 SCHEMA_SQL = os.path.join(HERE, "schema.sql")
@@ -179,6 +179,18 @@ def missing_problem_sections(content: str) -> list[str]:
     return [label for label in ("Symptom", "Cause", "Solution") if label.lower() not in text]
 
 
+# Colunas de uma nota, na ordem em que as linhas sao selecionadas e impressas.
+NOTE_FIELDS = (
+    "id", "timestamp", "category", "tags", "title", "content",
+    "verified_at", "disputed_at", "retracted_at", "status_reason",
+)
+
+
+def note_columns(prefix: str = "") -> str:
+    pre = f"{prefix}." if prefix else ""
+    return ", ".join(f"{pre}{field}" for field in NOTE_FIELDS)
+
+
 def add_note(category: str, title: str, tags: str, content: str) -> None:
     init_db()
     conn = _connect()
@@ -244,82 +256,202 @@ def update_note(
                 return 1
 
         timestamp = now_timestamp()
+        # Reescrever a nota a partir de evidencia e tambem um ato de verificacao:
+        # marca verified_at e limpa disputa/retracao (a informacao mudou, entao
+        # os avisos antigos nao valem mais).
         conn.execute(
-            "UPDATE notes SET timestamp = ?, category = ?, tags = ?, title = ?, content = ?"
+            "UPDATE notes SET timestamp = ?, category = ?, tags = ?, title = ?, content = ?,"
+            " verified_at = ?, disputed_at = NULL, retracted_at = NULL, status_reason = NULL"
             " WHERE id = ?",
-            (timestamp, new_category, new_tags, new_title, new_content, note_id),
+            (timestamp, new_category, new_tags, new_title, new_content, timestamp, note_id),
         )
         conn.commit()
         print(f"✏️  Nota {note_id} atualizada em {timestamp} [{new_category}]")
         print(f"   timestamp: {old_timestamp} → {timestamp}")
+        print("   ✔ marcada como verificada; disputa/retração limpas (se havia)")
         return 0
     finally:
         conn.close()
 
 
-def _fts_or_query(query: str) -> str:
-    """Texto livre -> query FTS5 com OR entre as palavras.
+def _load_note(conn: sqlite3.Connection, note_id: int):
+    return conn.execute(
+        f"SELECT {note_columns()} FROM notes WHERE id = ?", (note_id,)
+    ).fetchone()
 
-    Ex.: 'python sqlite' -> '"python" OR "sqlite"'
+
+def confirm_note(note_id: int) -> int:
+    """Marca a nota como verificada agora; limpa disputa e retração."""
+    init_db()
+    conn = _connect()
+    try:
+        if _load_note(conn, note_id) is None:
+            print(f"❌ Nota {note_id} não encontrada.")
+            return 1
+        timestamp = now_timestamp()
+        conn.execute(
+            "UPDATE notes SET verified_at = ?, disputed_at = NULL, retracted_at = NULL,"
+            " status_reason = NULL WHERE id = ?",
+            (timestamp, note_id),
+        )
+        conn.commit()
+        print(f"✔ Nota {note_id} verificada em {timestamp}")
+        print("   disputa/retração limpas (se havia): a nota volta a aparecer normalmente")
+        return 0
+    finally:
+        conn.close()
+
+
+def dispute_note(note_id: int, reason: str) -> int:
+    """Flagra a nota como suspeita (sem reescrever o conteúdo).
+
+    Para quando voce desconfia que esta errada mas nao tem a correcao — a
+    proxima leitura ve o aviso e a nota vai para o fim da lista. Com a
+    correcao em maos, o certo e `update`.
     """
-    words = query.split()
-    if not words:
-        raise ValueError("query vazia")
+    reason = (reason or "").strip()
+    if not reason:
+        print('Erro: "dispute" requer --why "<motivo>" (sem motivo nao ha aviso util).')
+        return 1
+    init_db()
+    conn = _connect()
+    try:
+        if _load_note(conn, note_id) is None:
+            print(f"❌ Nota {note_id} não encontrada.")
+            return 1
+        timestamp = now_timestamp()
+        conn.execute(
+            "UPDATE notes SET disputed_at = ?, status_reason = ?, retracted_at = NULL WHERE id = ?",
+            (timestamp, reason, note_id),
+        )
+        conn.commit()
+        print(f"⚠ Nota {note_id} disputada em {timestamp}: {reason}")
+        return 0
+    finally:
+        conn.close()
+
+
+def retract_note(note_id: int, reason: str = "") -> int:
+    """Esconde a nota do search/list (lixo, teste, obsoleta) — reversível.
+
+    Nao apaga nada: `confirm` ou `update` trazem a nota de volta, e `--all`
+    continua listando. E o substituto do delete, que fica so com o humano.
+    """
+    reason = (reason or "").strip() or "retracted"
+    init_db()
+    conn = _connect()
+    try:
+        if _load_note(conn, note_id) is None:
+            print(f"❌ Nota {note_id} não encontrada.")
+            return 1
+        timestamp = now_timestamp()
+        conn.execute(
+            "UPDATE notes SET retracted_at = ?, status_reason = ?, disputed_at = NULL WHERE id = ?",
+            (timestamp, reason, note_id),
+        )
+        conn.commit()
+        print(f"🚫 Nota {note_id} retratada em {timestamp}: {reason}")
+        print("   fora do search/list por padrão; `confirm`/`update` a trazem de volta, `--all` mostra")
+        return 0
+    finally:
+        conn.close()
+
+
+def _fts_query(words: list[str], joiner: str) -> str:
+    """Palavras -> query FTS5, combinadas com AND (preciso) ou OR (amplo)."""
     parts = ['"%s"' % w.replace('"', '""') for w in words]
-    return " OR ".join(parts)
+    return f" {joiner} ".join(parts)
 
 
 def _fetch(conn: sqlite3.Connection, sql: str, params: list) -> list:
     return conn.execute(sql, params).fetchall()
 
 
-def search_notes(query: str, limit: int | None = None) -> list:
+# Ordem: notas disputadas por ultimo (boolean 0/1), depois relevancia, depois
+# recencia. Um `#id` conflitante nunca aparece acima de uma nota confiavel.
+_ORDER_FTS = " ORDER BY (n.disputed_at IS NOT NULL), bm25(notes_fts), n.timestamp DESC"
+_ORDER_LIKE = " ORDER BY (disputed_at IS NOT NULL), timestamp DESC"
+
+
+def _fts_pass(
+    conn: sqlite3.Connection, words: list[str], joiner: str, limit: int | None, all: bool
+) -> list | None:
+    """Uma tentativa no FTS5. None = indice indisponivel/erro no MATCH."""
+    sql = (
+        f"SELECT {note_columns('n')} FROM notes n JOIN notes_fts f ON n.id = f.rowid"
+        " WHERE notes_fts MATCH ?"
+    )
+    if not all:
+        sql += " AND n.retracted_at IS NULL"
+    sql += _ORDER_FTS
+    params: list = [_fts_query(words, joiner)]
+    if limit:
+        sql += " LIMIT ?"
+        params.append(limit)
+    try:
+        return _fetch(conn, sql, params)
+    except sqlite3.Error:
+        return None
+
+
+def _like_pass(
+    conn: sqlite3.Connection, words: list[str], joiner: str, limit: int | None, all: bool
+) -> list:
+    """Busca LIKE: cada palavra casa em qualquer campo; palavras unidas por joiner."""
+    groups: list[str] = []
+    params: list = []
+    for w in words:
+        like = f"%{w}%"
+        groups.append("(title LIKE ? OR content LIKE ? OR tags LIKE ? OR category LIKE ?)")
+        params += [like, like, like, like]
+    sql = f"SELECT {note_columns()} FROM notes WHERE " + f" {joiner} ".join(groups)
+    if not all:
+        sql += " AND retracted_at IS NULL"
+    sql += _ORDER_LIKE
+    if limit:
+        sql += " LIMIT ?"
+        params.append(limit)
+    return _fetch(conn, sql, params)
+
+
+def search_notes(query: str, limit: int | None = None, all: bool = False) -> list:
+    """Busca full-text. Tenta AND (todas as palavras) e so depois OR.
+
+    Isso evita o diluvio de resultados irrelevantes de uma query generica:
+    "skill permission" so cai no OR se nao houver nota com as duas palavras.
+    Notas retratadas ficam fora, a menos que all=True.
+    """
     init_db()
     conn = _connect()
     try:
-        rows: list | None = None
+        words = query.split()
+        if not words:
+            return []
         if has_fts(conn):
-            sql = (
-                "SELECT n.id, n.timestamp, n.category, n.tags, n.title, n.content"
-                " FROM notes n JOIN notes_fts f ON n.id = f.rowid"
-                " WHERE notes_fts MATCH ? ORDER BY n.timestamp DESC"
-            )
-            params: list = [_fts_or_query(query)]
-            try:
-                if limit:
-                    sql += " LIMIT ?"
-                    params.append(limit)
-                rows = _fetch(conn, sql, params)
-            except sqlite3.Error:
-                rows = None
-
-        if not rows:  # sem FTS, erro no MATCH, ou zero resultados -> LIKE
-            like = f"%{query}%"
-            sql = (
-                "SELECT id, timestamp, category, tags, title, content FROM notes"
-                " WHERE title LIKE ? OR content LIKE ? OR tags LIKE ? OR category LIKE ?"
-                " ORDER BY timestamp DESC"
-            )
-            params = [like, like, like, like]
-            if limit:
-                sql += " LIMIT ?"
-                params.append(limit)
-            rows = _fetch(conn, sql, params)
-        return rows or []
+            for joiner in ("AND", "OR"):
+                rows = _fts_pass(conn, words, joiner, limit, all)
+                if rows:
+                    return rows
+                if rows is None:  # FTS quebrado -> LIKE
+                    break
+        for joiner in ("AND", "OR"):
+            rows = _like_pass(conn, words, joiner, limit, all)
+            if rows:
+                return rows
+        return []
     finally:
         conn.close()
 
 
-def list_notes(limit: int = DEFAULT_LIST_LIMIT) -> list:
+def list_notes(limit: int = DEFAULT_LIST_LIMIT, all: bool = False) -> list:
     init_db()
     conn = _connect()
     try:
-        return _fetch(
-            conn,
-            "SELECT id, timestamp, category, tags, title, content FROM notes"
-            " ORDER BY timestamp DESC LIMIT ?",
-            [limit],
-        )
+        sql = f"SELECT {note_columns()} FROM notes"
+        if not all:
+            sql += " WHERE retracted_at IS NULL"
+        sql += _ORDER_LIKE + " LIMIT ?"
+        return _fetch(conn, sql, [limit])
     finally:
         conn.close()
 
@@ -327,22 +459,34 @@ def list_notes(limit: int = DEFAULT_LIST_LIMIT) -> list:
 def _print_rows(header: str, rows: list) -> None:
     print(header + "\n" + "=" * 50)
     for r in rows:
-        print(f"#{r[0]} [{r[1]}] ({r[2]}) **{r[4]}**")
-        if r[3]:
-            print(f"Tags: {r[3]}")
-        print(f"Conteúdo:\n{r[5]}\n" + "-" * 50)
+        (note_id, timestamp, category, tags, title, content,
+         verified_at, disputed_at, retracted_at, status_reason) = r
+        print(f"#{note_id} [{timestamp}] ({category}) **{title}**")
+        flags = []
+        if retracted_at:
+            flags.append(f"🚫 retracted {retracted_at}" + (f": {status_reason}" if status_reason else ""))
+        elif disputed_at:
+            flags.append(f"⚠ disputed {disputed_at}" + (f": {status_reason}" if status_reason else ""))
+        if verified_at:
+            flags.append(f"✔ verified {verified_at}")
+        if flags:
+            print("   " + " · ".join(flags))
+        if tags:
+            print(f"Tags: {tags}")
+        print(f"Conteúdo:\n{content}\n" + "-" * 50)
 
 
-def print_search(query: str, limit: int | None = None) -> None:
-    rows = search_notes(query, limit)
+def print_search(query: str, limit: int | None = None, all: bool = False) -> None:
+    rows = search_notes(query, limit, all)
     if not rows:
-        print(f"❌ Nenhuma nota encontrada para '{query}'.")
+        extra = "" if all else " (notas retratadas ficam fora; use --all para vê-las)"
+        print(f"❌ Nenhuma nota encontrada para '{query}'.{extra}")
         return
     _print_rows(f"🔍 Encontradas {len(rows)} nota(s) para '{query}':", rows)
 
 
-def print_list(limit: int = DEFAULT_LIST_LIMIT) -> None:
-    rows = list_notes(limit)
+def print_list(limit: int = DEFAULT_LIST_LIMIT, all: bool = False) -> None:
+    rows = list_notes(limit, all)
     if not rows:
         print("📭 Nenhuma nota registrada ainda.")
         return
@@ -376,7 +520,7 @@ def export_notes(dest: str | None = None) -> int:
     try:
         rows = _fetch(
             conn,
-            "SELECT id, timestamp, category, tags, title, content FROM notes ORDER BY id",
+            f"SELECT {note_columns()} FROM notes ORDER BY id",
             [],
         )
         payload = {
@@ -385,14 +529,7 @@ def export_notes(dest: str | None = None) -> int:
             "exported_at": datetime.now().isoformat(timespec="seconds"),
             "count": len(rows),
             "notes": [
-                {
-                    "id": r[0],
-                    "timestamp": r[1],
-                    "category": r[2],
-                    "tags": r[3],
-                    "title": r[4],
-                    "content": r[5],
-                }
+                dict(zip(NOTE_FIELDS, r))
                 for r in rows
             ],
         }
@@ -451,9 +588,16 @@ def import_notes(path: str) -> int:
                 skipped += 1
                 continue
             conn.execute(
-                "INSERT INTO notes (timestamp, category, tags, title, content)"
-                " VALUES (?, ?, ?, ?, ?)",
-                (timestamp, category, tags, title, content),
+                "INSERT INTO notes (timestamp, category, tags, title, content,"
+                " verified_at, disputed_at, retracted_at, status_reason)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    timestamp, category, tags, title, content,
+                    n.get("verified_at") or None,
+                    n.get("disputed_at") or None,
+                    n.get("retracted_at") or None,
+                    n.get("status_reason") or None,
+                ),
             )
             added += 1
         conn.commit()
@@ -533,6 +677,16 @@ def doctor() -> int:
                 warned = True
         else:
             print("indice fts  : (ausente — busca LIKE)")
+        flags = conn.execute(
+            "SELECT"
+            " SUM(verified_at IS NOT NULL),"
+            " SUM(disputed_at IS NOT NULL),"
+            " SUM(retracted_at IS NOT NULL) FROM notes"
+        ).fetchone()
+        verified, disputed, retracted = (v or 0 for v in flags)
+        print(f"confianca   : {verified} verificada(s), {disputed} disputada(s), {retracted} retratada(s)")
+        if disputed:
+            warn("há nota(s) disputada(s) — veja o aviso ⚠ na busca e corrija com `notes update`")
         cats = conn.execute(
             "SELECT category, COUNT(*) FROM notes GROUP BY category ORDER BY 2 DESC"
         ).fetchall()
@@ -608,8 +762,11 @@ Uso:
   notes add "<categoria>" "<título>" "<tags>" "<conteúdo>"
   notes update <id> [--title T] [--tags T] [--content C | --content-file F]
                     [--category C]  # ÚLTIMO RECURSO: corrige informação conflitante
-  notes search "<termo>" [limite]   # múltiplas palavras = OR
-  notes list [limite]               # padrão: {DEFAULT_LIST_LIMIT}
+  notes confirm <id>                # ✔ reverifiquei: vale hoje (limpa disputa/retração)
+  notes dispute <id> --why "<motivo>"   # ⚠ suspeita: mostrada, mas por último
+  notes retract <id> [--why "<motivo>"] # 🚫 lixo/obsoleta: some do search/list (reversível)
+  notes search "<termo>" [limite] [--all]  # todas as palavras (AND); depois OR
+  notes list [limite] [--all]       # padrão: {DEFAULT_LIST_LIMIT}; --all inclui retratadas
   notes doctor                      # diagnóstico da máquina/banco
   notes init                        # cria/atualiza banco e schema (idempotente)
   notes export [arquivo|-]          # backup/transporte em JSON (padrão: stdout)
@@ -676,15 +833,45 @@ def main(argv: list[str]) -> int:
                 return 1
             fields[key] = rest.pop(0)
         return update_note(note_id, **fields)
-    elif cmd == "search":
+    elif cmd in ("confirm", "dispute", "retract"):
         if len(argv) < 3:
+            print(f'Erro: "{cmd}" requer o id da nota.')
+            return 1
+        try:
+            note_id = int(argv[2])
+        except ValueError:
+            print(f'Erro: id inválido: {argv[2]!r}')
+            return 1
+        reason = ""
+        rest = argv[3:]
+        while rest:
+            flag = rest.pop(0)
+            if flag != "--why":
+                print(f'Erro: opção desconhecida em "{cmd}": {flag}')
+                return 1
+            if not rest:
+                print('Erro: "--why" requer um motivo.')
+                return 1
+            reason = rest.pop(0)
+        if cmd == "confirm":
+            return confirm_note(note_id)
+        if cmd == "dispute":
+            return dispute_note(note_id, reason)
+        return retract_note(note_id, reason)
+    elif cmd == "search":
+        args = argv[2:]
+        all_flag = "--all" in args
+        args = [a for a in args if a != "--all"]
+        if not args:
             print('Erro: "search" requer um termo de busca.')
             return 1
-        limit = int(argv[3]) if len(argv) > 3 and argv[3].isdigit() else None
-        print_search(argv[2], limit)
+        limit = int(args[1]) if len(args) > 1 and args[1].isdigit() else None
+        print_search(args[0], limit, all_flag)
     elif cmd == "list":
-        limit = int(argv[2]) if len(argv) > 2 and argv[2].isdigit() else DEFAULT_LIST_LIMIT
-        print_list(limit)
+        all_flag = "--all" in argv[2:]
+        args = [a for a in argv[2:] if a != "--all"]
+        limit = int(args[0]) if args and args[0].isdigit() else DEFAULT_LIST_LIMIT
+        print_list(limit, all_flag)
     elif cmd == "init":
         init_db()
         status = "com FTS5" if fts_supported() else "sem FTS5 (busca LIKE)"

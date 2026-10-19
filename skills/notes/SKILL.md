@@ -1,6 +1,6 @@
 ---
 name: notes
-description: Long-term memory in SQLite (FTS5) via global CLI `notes` and tools `notes_add`/`notes_update`/`notes_search`/`notes_doctor`. Use to remember or recover decisions, configuration, snippets, and project context from previous sessions, and to record new notes — including the mandatory registration of resolved problems with symptom, cause, and solution. `notes_update` is a last resort, only to fix a note that is now known to be wrong or conflicts with verified information. Refer to it whenever the user asks what was decided/done before, asks for previous context, or before working on a project with history.
+description: Long-term memory in SQLite (FTS5) via global CLI `notes` and tools `notes_add`/`notes_update`/`notes_confirm`/`notes_dispute`/`notes_retract`/`notes_search`/`notes_doctor`. Use to remember or recover decisions, configuration, snippets, and project context from previous sessions, and to record new notes — including the mandatory registration of resolved problems with symptom, cause, and solution. `notes_update` is a last resort, only to fix a note that is now known to be wrong or conflicts with verified information; `notes_confirm`/`notes_dispute` set the trust signal on a note read as-is, and `notes_retract` hides noise without deleting. Refer to it whenever the user asks what was decided/done before, asks for previous context, or before working on a project with history.
 metadata:
   audience: any
   opencode/slash: "true"
@@ -18,19 +18,25 @@ Implementation and installation: repo **`agent-toolbelt`** (section `memory/`).
 
 | Tool | For |
 |---|---|
-| `notes_search` | search / list recent notes (without `query` = list) |
+| `notes_search` | search / list recent notes (without `query` = list). Disputed notes show ⚠ and sort last; retracted ones are hidden unless `includeRetracted` |
 | `notes_add` | record a new note (validates the `#problem` format) |
-| `notes_update` | **last resort**: fix a note that is wrong or conflicts (moves its timestamp) |
+| `notes_update` | **last resort**: fix a note that is wrong or conflicts (moves its timestamp, re-verifies it) |
+| `notes_confirm` | ✔ re-verified a note read as-is: it still holds (clears dispute/retraction) |
+| `notes_dispute` | ⚠ flag a note as suspect **without** rewriting it (needs `why`) |
+| `notes_retract` | 🚫 hide junk/obsolete noise from search/list (reversible, nothing is deleted) |
 | `notes_doctor` | diagnose memory/schema/FTS5 when something fails |
 
 Via terminal (or when tools are unavailable), the equivalent CLI:
 
 ```bash
-notes search "<term>" [limit]   # multiple words = OR (matches any)
-notes list [limit]              # default: 10
+notes search "<term>" [limit] [--all]   # all words first (AND), then any (OR)
+notes list [limit] [--all]              # default: 10; --all includes retracted
 notes add "<category>" "<title>" "<tags>" "<content>"
 notes update <id> [--title T] [--tags T] [--content C | --content-file F]
                   [--category C]  # last resort: fix conflicting information
+notes confirm <id>                # re-verified: still valid (clears dispute/retraction)
+notes dispute <id> --why "<reason>"   # suspicious, but not corrected: shown last
+notes retract <id> [--why "<reason>"] # junk/obsolete: gone from search/list
 notes doctor                      # diagnosis
 ```
 
@@ -91,6 +97,39 @@ notes update 51 --content "Correction: the missing kv row was the cause; ..."
 notes update 51 --title "..." --tags "..."     # title/tags only
 printf '%s\n' "<new content>" | notes update 51 --content-file -
 ```
+
+## Trust: confirm, dispute, retract
+
+A note carries a trust signal. Three operations set it, none of them deletes:
+
+| You want to… | Do | Effect |
+|---|---|---|
+| say "this still holds" after using it | `notes_confirm <id>` | ✔ verified now; clears dispute/retraction |
+| warn others it looks wrong, **no fix yet** | `notes_dispute <id> --why "…"` | ⚠ shown, sorted **last**, reason mandatory |
+| silence junk/obsolete/a test leftover | `notes_retract <id> [--why "…"]` | 🚫 hidden from search/list (reversible) |
+| fix what is actually wrong | `notes_update <id> --content "…"` | rewrites the note, re-verifies, clears flags |
+
+Choosing the right one:
+
+- **Wrong and you have the fix** → `update`. **Wrong but no fix yet** → `dispute`
+  (never leave a suspected-wrong note unflagged).
+- **Right, and you just relied on it** → `confirm`. This is the cheap, positive
+  signal; confirming costs one call and tells the next agent the note survived
+  real use. Prefer it over writing a duplicate "still works" note.
+- **Noise** (a probe/test note, a superseded duplicate, a scratch entry) →
+  `retract`, not silence and never deletion. `--all` still shows it, and
+  `confirm`/`update` revive it.
+- `dispute` and `retract` are mutually exclusive: disputing a retracted note
+  makes it visible again (warning), retracting a disputed one hides it.
+
+Display and ordering: search/list print `✔ verified <ts>`, `⚠ disputed <ts>` or
+`🚫 retracted <ts>` under each note. Disputed notes always sort **after** clean
+ones, so a conflict never outranks a trustworthy note. `--all` (CLI) or
+`includeRetracted: true` (tool) reveals retracted notes for auditing.
+
+Closing ritual: before you finish, the notes you *relied on* get a `confirm`
+(if verified) or a `dispute` (if suspect), and any notes you created as scratch
+get `retract`. `update` stays reserved for genuine corrections.
 
 ## Conventions
 

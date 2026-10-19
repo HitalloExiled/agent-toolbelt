@@ -3,8 +3,9 @@
  *
  * Thin, typed wrapper over the global `notes` CLI, which lives in
  * ../memory/notes.py inside this repo. The wrapper exposes NO destructive
- * operation: only add / update / search / list / doctor. `update` is the only
- * mutation of an existing note and exists to correct conflicting information.
+ * operation: add / update / confirm / dispute / retract / search / list /
+ * doctor. `update` and the trust flags change an existing note; `retract` only
+ * hides it (reversible), nothing is ever deleted.
  *
  * Safety:
  *  - execution via spawn with argv (no shell) => the note content is never
@@ -159,7 +160,8 @@ export const update = tool({
     "reword for style, or erase history — save a new note instead. Only the fields " +
     "you pass change; the timestamp is set to now, so the corrected note moves to " +
     "the top. If the resulting note is category=problem, it still needs " +
-    "Symptom, Cause and Solution.",
+    "Symptom, Cause and Solution. Rewriting a note from evidence also marks it " +
+    "verified and clears any dispute/retraction (the old warnings no longer apply).",
   args: {
     id: tool.schema
       .number()
@@ -237,8 +239,11 @@ export const update = tool({
 export const search = tool({
   description:
     "Search long-term memory. Without 'query', lists the most recent notes. " +
-    "Multiple words are combined with OR (matches any). Use BEFORE working on a " +
-    "project with history and before saving a new note.",
+    "Multi-word queries first require ALL words (AND) and only fall back to ANY (OR) " +
+    "when nothing matches, so results stay precise. Disputed notes are still shown " +
+    "but listed last, with a ⚠ badge; retracted notes are hidden unless " +
+    "includeRetracted=true. Use BEFORE working on a project with history and before " +
+    "saving a new note.",
   args: {
     query: tool.schema
       .string()
@@ -250,17 +255,111 @@ export const search = tool({
       .positive()
       .optional()
       .describe("Max notes to return (default: 10)."),
+    includeRetracted: tool.schema
+      .boolean()
+      .optional()
+      .describe(
+        "Also show retracted notes (🚫), normally hidden. Use to audit/revive, not for normal recall.",
+      ),
   },
   async execute(args) {
     const query = (args.query ?? "").trim();
     const limit = args.limit ?? 10;
-    const run = query
-      ? await runNb(["search", query, String(limit)])
-      : await runNb(["list", String(limit)]);
+    const argv = query ? ["search", query, String(limit)] : ["list", String(limit)];
+    if (args.includeRetracted === true) argv.push("--all");
+    const run = await runNb(argv);
     return {
       title: query ? `notes_search: ${query}` : "notes_search: latest notes",
       output: render(run),
       metadata: { query, limit, exit: run.code },
+    };
+  },
+});
+
+export const confirm = tool({
+  description:
+    "Mark a note as re-verified: it still holds as of now. This is the positive " +
+    "signal — use it after you relied on a note and independently confirmed it is " +
+    "correct. Clears any dispute/retraction on the note (brings a retracted note " +
+    "back into normal search). Prefer this over a new note when nothing changed.",
+  args: {
+    id: tool.schema
+      .number()
+      .int()
+      .positive()
+      .describe("Note id, shown as #NN by notes_search / notes_list."),
+  },
+  async execute(args) {
+    const run = await runNb(["confirm", String(args.id)]);
+    return {
+      title: `notes_confirm: ${args.id}`,
+      output: render(run),
+      metadata: { id: args.id, exit: run.code },
+    };
+  },
+});
+
+export const dispute = tool({
+  description:
+    "Flag a note as suspect WITHOUT rewriting it (dispute). Use when you believe " +
+    "the note is wrong or outdated but do not yet have the correction: the next " +
+    "reader sees a ⚠ warning and the note sinks to the bottom of results. 'why' is " +
+    "mandatory. Once you have the fix, use notes_update instead — that resolves the " +
+    "dispute and re-verifies the note.",
+  args: {
+    id: tool.schema
+      .number()
+      .int()
+      .positive()
+      .describe("Note id, shown as #NN by notes_search / notes_list."),
+    why: tool.schema
+      .string()
+      .describe(
+        "Concrete reason it looks wrong (what you saw that contradicts it). Mandatory.",
+      ),
+  },
+  async execute(args) {
+    if (!args.why.trim()) {
+      return {
+        title: "notes_dispute: refused",
+        output: "❌ 'why' is mandatory — a dispute without a reason is not actionable.",
+        metadata: { rejected: true },
+      };
+    }
+    const run = await runNb(["dispute", String(args.id), "--why", args.why]);
+    return {
+      title: `notes_dispute: ${args.id}`,
+      output: render(run),
+      metadata: { id: args.id, exit: run.code },
+    };
+  },
+});
+
+export const retract = tool({
+  description:
+    "Retract a note: hides it from normal search/list (junk, a test/probe leftover, " +
+    "superseded noise) without deleting anything. Reversible — notes_confirm or " +
+    "notes_update brings it back, and includeRetracted=true still shows it with a " +
+    "🚫 badge. This is the noise-control tool; deletion stays a human-only action.",
+  args: {
+    id: tool.schema
+      .number()
+      .int()
+      .positive()
+      .describe("Note id, shown as #NN by notes_search / notes_list."),
+    why: tool.schema
+      .string()
+      .optional()
+      .describe("Short reason it is being retracted (stored, shown with the 🚫 badge)."),
+  },
+  async execute(args) {
+    const argv = ["retract", String(args.id)];
+    if (args.why !== undefined) argv.push("--why", args.why);
+    const run = await runNb(argv);
+    return {
+      title: `notes_retract: ${args.id}`,
+      output: render(run),
+      metadata: { id: args.id, exit: run.code },
     };
   },
 });
