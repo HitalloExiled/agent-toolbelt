@@ -32,7 +32,8 @@ Per task:
    container over the exec channel; requested files are streamed into
    `/workspace` the same way (`docker cp` cannot see mount content on this
    daemon, so all transfer uses `docker exec` stdio).
-3. Inside: `opencode run --standalone --auto --format json "<prompt>"`.
+3. Inside: `opencode run --auto --format json "<prompt>"` — on the container's
+   background service, so a running turn is steerable (`steer --run <run-id>`).
 4. Deliverables (whatever the agent wrote to `/workspace/out`) are on the host
    prefix; `runs/<run-id>/` holds the rest, and the containers are removed.
 
@@ -160,6 +161,9 @@ SANDBOX_OUT_ROOT=/tmp/sbx opencode-sb task --prompt "…"
   and only the **last N messages** (default 12, each line truncated) — no live
   following, no unbounded output. This is what a **host agent** should use to
   check a run without flooding its own context.
+- **Steer it (do not re-run).** A detached run is a live process: correct it
+  with `opencode-sb steer --run <run-id> "…"` instead of starting a second task
+  with a reworded prompt. See **Steering** below.
 
 ```bash
 runid=$(opencode-sb task --detach --prompt "…" 2>/dev/null | awk '/^run /{print $2}')
@@ -189,13 +193,41 @@ directly, so they work while the TUI is open in another terminal:
   prints the session title and only the last N parts (default 12, each
   truncated) — use this from the host agent.
 - **Pick a session.** `opencode-sb sessions` lists recent sessions (id, message
-  count, age, title); pass an id to narrow either view.
+  count, age, title, and `(running)`/`(idle)`); pass an id to narrow either view.
 
 ```bash
-opencode-sb sessions            # id, msgs, age, title
+opencode-sb sessions            # id, msgs, age, title (running|idle)
 opencode-sb peek --session      # newest session, last 12 parts
 opencode-sb watch --session     # (human) live; ctrl-c to stop
 ```
+
+## Steering a running turn
+
+A running turn is a live process. Correct it **in place** instead of launching
+another run; a second prompt duplicates work, loses the context the agent built,
+and may corrupt shared output.
+
+```bash
+opencode-sb steer "use the local model"                  # inject into the current turn
+opencode-sb steer --queue "after that, run the tests"    # deliver after the turn
+opencode-sb steer --interrupt "stop; revert the last edit"  # stop + redirect now
+opencode-sb steer --run run-20261020T… "use the mirror"  # target a detached task
+opencode-sb interrupt [--session ID | --run RUN-ID]      # stop only
+```
+
+How it works: `steer` posts to the container's OpenCode HTTP API over
+`docker exec` (no new network exposure; works in `--sealed`). The API's
+`delivery` is `steer` (inject mid-turn, the default) or `queue` (park until the
+current turn ends); `--interrupt` stops the current step and resumes with the
+message. Target resolution is `--session` → the only running session → the only
+session at all; with several running it refuses and prints them with
+`(running)`/`(idle)`. `run`/`task` execute on the container's **background
+service** (not `--standalone`), which is what makes them reachable;
+`opencode-sb run --standalone` opts out (and loses steerability; `task` has no
+such flag).
+
+`opencode-sb status` shows `active: ses_… (running)` or `none (idle)`; `peek`
+and `sessions` show the same state.
 
 ## Global CLI
 

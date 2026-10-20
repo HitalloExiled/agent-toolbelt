@@ -75,7 +75,12 @@ Usage:
   ./run.sh peek  [<run-id>] [-n N]           bounded snapshot: last N messages (default 12)
   ./run.sh watch --session [--from-start]    follow the active session live
   ./run.sh peek  --session [-n N] [<sid>]    bounded snapshot of the active session
-  ./run.sh sessions                          list the running session's sessions
+  ./run.sh sessions                          list sessions with (running)/(idle)
+  ./run.sh steer [--session ID | --run RUN-ID] [--queue] [--interrupt] [--follow] "msg"
+                                             steer a running turn (default: inject now)
+  ./run.sh interrupt [--session ID | --run RUN-ID] [--resume]
+                                             stop the active turn
+  ./run.sh status                            session/proxy/relay + active turn
   ./run.sh up                                start a long-lived session container
   ./run.sh down                              stop and remove the session container
   ./run.sh logs <run-id>                     show the egress proxy log of a run
@@ -605,6 +610,77 @@ session_exists() { # a session container in any state
   docker ps -a --format '{{.Names}}' 2>/dev/null | grep -qx "$SESSION"
 }
 
+# --- steering ------------------------------------------------------------- #
+# The background OpenCode service inside a container owns turns started by the
+# TUI or by `opencode run` (without --standalone). These helpers talk to it via
+# `docker exec`; nothing is exposed on the network, so steering also works in
+# sealed mode. Each helper takes the target container, so the long-lived session
+# and a detached task (`sandbox-<run-id>`) are both steerable.
+
+container_running() { # $1 = container name
+  docker ps --format '{{.Names}}' 2>/dev/null | grep -qx "$1"
+}
+
+session_api() { # $1 = container, rest = `opencode api` args
+  local c="$1"; shift
+  docker exec "$c" opencode api "$@"
+}
+
+session_service_up() { # $1 = container
+  docker exec "$1" opencode service status 2>&1 | grep -q '^http'
+}
+
+session_active_ids() { # $1 = container -> one session id per line
+  session_service_up "$1" || return 0
+  session_api "$1" GET /api/session/active 2>/dev/null \
+    | grep -oE '"ses_[A-Za-z0-9]+"' | tr -d '"' || true
+}
+
+session_all_ids() { # $1 = container -> newest first
+  docker exec -i "$1" python3 - ids < "$ROOT/session_journal.py" 2>/dev/null || true
+}
+
+session_state() { # $1 = container, $2 = sid -> running|idle
+  if session_active_ids "$1" | grep -qx "$2"; then printf 'running'; else printf 'idle'; fi
+}
+
+session_newest_id() { # $1 = container
+  session_all_ids "$1" | head -1
+}
+
+# One line per session with its (running)/(idle) marker.
+list_sessions() { # $1 = container
+  local -a active=()
+  mapfile -t active < <(session_active_ids "$1")
+  docker exec -i "$1" python3 - list "${active[@]}" < "$ROOT/session_journal.py"
+}
+
+# Resolve the steering target: explicit id, the only running session, the only
+# session at all, else fail with the state-annotated list of candidates.
+resolve_session() { # $1 = container, $2 = explicit sid (optional)
+  local c="$1" explicit="${2:-}"
+  if [ -n "$explicit" ]; then printf '%s\n' "$explicit"; return 0; fi
+
+  local -a active=() all=()
+  mapfile -t active < <(session_active_ids "$c")
+  if [ "${#active[@]}" -eq 1 ]; then printf '%s\n' "${active[0]}"; return 0; fi
+  if [ "${#active[@]}" -gt 1 ]; then
+    log "error: ${#active[@]} sessions are running; choose one with --session:"
+    list_sessions "$c" >&2 || true
+    return 1
+  fi
+
+  mapfile -t all < <(session_all_ids "$c")
+  if [ "${#all[@]}" -eq 1 ]; then printf '%s\n' "${all[0]}"; return 0; fi
+  if [ "${#all[@]}" -eq 0 ]; then
+    log "error: no session found in $c"
+    return 1
+  fi
+  log "error: no session is running; choose one with --session:"
+  list_sessions "$c" >&2 || true
+  return 1
+}
+
 cmd_task() {
   local -a orig_args=("$@")
   local prompt="" prompt_file="" model="" title="" sealed=0 src strict="${STRICT:-0}"
@@ -765,7 +841,10 @@ cmd_task() {
     fi
   done
 
-  local run_args=(run --standalone --auto --format json)
+  # No --standalone: the turn runs on the container's background service, which
+  # is what makes a *running* task steerable (`steer --run <id>`). cleanup_task
+  # removes the container (and the service) when the run ends.
+  local run_args=(run --auto --format json)
   if [ -n "$model" ]; then run_args+=(--model "$model"); fi
   if [ -n "$title" ]; then run_args+=(--title "$title"); fi
   run_args+=("$prompt")
@@ -902,7 +981,8 @@ cmd_up() {
   log "session up: $SESSION"
   log "  out   : $out_dir/ (host)"
   log "  interactive : opencode-sandboxed   (or: docker exec -it $SESSION opencode)"
-  log "  one-shot    : docker exec $SESSION opencode run --standalone --auto \"message\""
+  log "  one-shot    : docker exec $SESSION opencode run --auto \"message\""
+  log "  steer       : opencode-sb steer \"correction\"   (queue: --queue, stop: --interrupt)"
 }
 
 cmd_down() {
@@ -973,7 +1053,133 @@ cmd_watch() {
 # List the running session's sessions (id, message count, age, title).
 cmd_sessions() {
   session_running || { log "no running session (start one: opencode-sb up)"; exit 1; }
-  exec docker exec -i "$SESSION" python3 - list < "$ROOT/session_journal.py"
+  list_sessions "$SESSION"
+}
+
+# Session/proxy/relay state, plus which session currently owns a turn.
+cmd_status() {
+  local session proxy relay
+  session="$(docker ps -a --filter "name=$SESSION" --format '{{.Names}} ({{.State}})' 2>/dev/null | head -n1)"
+  proxy="$(docker ps -a --filter "name=$SESSION_PROXY" --format '{{.Names}} ({{.State}})' 2>/dev/null | head -n1)"
+  relay="$(docker ps -a --filter 'name=model-relay-' --format '{{.Names}} ({{.State}})' 2>/dev/null | head -n1)"
+  printf 'session : %s\n' "${session:-stopped}"
+  printf 'proxy   : %s\n' "${proxy:-stopped}"
+  printf 'relay   : %s\n' "${relay:-stopped}"
+  if session_running; then
+    local -a active=()
+    mapfile -t active < <(session_active_ids "$SESSION")
+    case "${#active[@]}" in
+      0) printf 'active  : none (idle)\n' ;;
+      1) printf 'active  : %s (running)\n' "${active[0]}" ;;
+      *) printf 'active  : %s running (see: opencode-sb sessions)\n' "${#active[@]}" ;;
+    esac
+    printf '  attach: opencode-sandboxed   (alias: opencode-sb)\n'
+  fi
+}
+
+# Send a message into an already-running turn. delivery=steer injects it into
+# the current turn; --queue parks it until the turn ends. --interrupt asks the
+# service to stop the current step and resume with this message. Target: the
+# long-lived session by default, or --run <run-id> for a detached task.
+cmd_steer() {
+  local sid_arg="" run_id="" delivery="steer" interrupt=0 follow=0
+  local -a words=()
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --session|-s) sid_arg="${2:?--session requires a session id}"; shift 2 ;;
+      --run)        run_id="${2:?--run requires a run id}"; shift 2 ;;
+      --queue)      delivery="queue"; shift ;;
+      --steer)      delivery="steer"; shift ;;
+      --interrupt)  interrupt=1; shift ;;
+      --follow)     follow=1; shift ;;
+      --)           shift; words+=("$@"); break ;;
+      -*)           log "unknown option for 'steer': $1"; exit 2 ;;
+      *)            words+=("$1"); shift ;;
+    esac
+  done
+  if [ "${#words[@]}" -eq 0 ]; then
+    log "usage: ./run.sh steer [--session ID | --run RUN-ID] [--queue|--steer] [--interrupt] [--follow] <message...>"
+    exit 2
+  fi
+  command -v python3 >/dev/null 2>&1 || { log "python3 is required to encode the message"; exit 1; }
+
+  local c="$SESSION"
+  [ -n "$run_id" ] && c="sandbox-$run_id"
+  if ! container_running "$c"; then
+    if [ -n "$run_id" ]; then
+      log "no running container '$c' (task finished or never started)"
+    else
+      log "no running session (start one: opencode-sb up)"
+    fi
+    exit 1
+  fi
+
+  local sid was_running=no
+  sid="$(resolve_session "$c" "$sid_arg")" || exit 1
+  session_active_ids "$c" | grep -qx "$sid" && was_running=yes
+
+  local text="${words[*]}" body resp msgid
+  body="$(python3 -c 'import json,sys; print(json.dumps({"text": sys.argv[1], "delivery": sys.argv[2], "resume": True}))' "$text" "$delivery")"
+  resp="$(session_api "$c" POST "/api/session/$sid/prompt" -d "$body")" \
+    || { log "error: the session did not accept the message"; exit 1; }
+  msgid="$(printf '%s' "$resp" | grep -oE '"id"[[:space:]]*:[[:space:]]*"msg_[A-Za-z0-9]+"' \
+    | head -1 | sed 's/.*"\(msg_[A-Za-z0-9]*\)"/\1/')"
+
+  log "steer: ${msgid:-queued} -> $sid in $c (delivery=$delivery, running=$was_running)"
+
+  if [ "$interrupt" = 1 ]; then
+    local iresp
+    iresp="$(session_api "$c" POST "/api/session/$sid/interrupt?resume=true")" \
+      || { log "error: interrupt request failed"; exit 1; }
+    log "interrupt: $(printf '%s' "$iresp" | grep -oE '"interrupted"[[:space:]]*:[[:space:]]*(true|false)' \
+      | sed 's/.*: *//')"
+  fi
+
+  if [ "$follow" = 1 ]; then
+    if [ -n "$run_id" ]; then
+      log "note: a task transcript is in result.json; follow it with: opencode-sb peek $run_id"
+    else
+      cmd_watch --session "$sid"
+    fi
+  elif [ -n "$run_id" ]; then
+    log "  peek: opencode-sb peek $run_id"
+  else
+    log "  peek: opencode-sb peek --session"
+  fi
+}
+
+# Stop the active turn. resume=false (default) parks pending prompts; --resume
+# lets the service resume pending steering input immediately.
+cmd_interrupt() {
+  local sid_arg="" run_id="" resume="false"
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --session|-s) sid_arg="${2:?--session requires a session id}"; shift 2 ;;
+      --run)        run_id="${2:?--run requires a run id}"; shift 2 ;;
+      --resume)     resume="true"; shift ;;
+      -*)           log "unknown option for 'interrupt': $1"; exit 2 ;;
+      *)            log "unexpected argument for 'interrupt': $1"; exit 2 ;;
+    esac
+  done
+
+  local c="$SESSION"
+  [ -n "$run_id" ] && c="sandbox-$run_id"
+  if ! container_running "$c"; then
+    if [ -n "$run_id" ]; then
+      log "no running container '$c' (task finished or never started)"
+    else
+      log "no running session (start one: opencode-sb up)"
+    fi
+    exit 1
+  fi
+
+  local sid resp interrupted
+  sid="$(resolve_session "$c" "$sid_arg")" || exit 1
+  resp="$(session_api "$c" POST "/api/session/$sid/interrupt?resume=$resume")" \
+    || { log "error: interrupt request failed"; exit 1; }
+  interrupted="$(printf '%s' "$resp" | grep -oE '"interrupted"[[:space:]]*:[[:space:]]*(true|false)' \
+    | sed 's/.*: *//')"
+  log "interrupt: session=$sid container=$c interrupted=${interrupted:-unknown} (resume=$resume)"
 }
 
 # Bounded snapshot for a host agent: status + only the last N messages, so a
@@ -990,7 +1196,9 @@ cmd_peek() {
   done
   if [ "$session" = 1 ]; then
     session_running || { log "no running session (start one: opencode-sb up)"; exit 1; }
-    exec docker exec -i "$SESSION" python3 - peek "$limit" "$runid" \
+    local sid="${runid:-$(session_newest_id "$SESSION")}"
+    if [ -z "$sid" ]; then log "no sessions yet"; exit 1; fi
+    exec docker exec -i "$SESSION" python3 - peek "$limit" "$sid" "$(session_state "$SESSION" "$sid")" \
       < "$ROOT/session_journal.py"
   fi
   runid="$(resolve_run "$runid")"
@@ -1028,6 +1236,9 @@ case "${1:-help}" in
   watch) shift; cmd_watch "$@" ;;
   peek)  shift; cmd_peek "$@" ;;
   sessions) cmd_sessions ;;
+  steer) shift; cmd_steer "$@" ;;
+  interrupt) shift; cmd_interrupt "$@" ;;
+  status) cmd_status ;;
   logs)  shift; cmd_logs "$@" ;;
   models) shift; cmd_models "$@" ;;
   clean) cmd_clean ;;

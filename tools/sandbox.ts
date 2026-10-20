@@ -160,7 +160,8 @@ export const run = tool({
     "skill's Model selection). After any task, audit the network with " +
     "sandbox_logs. Whatever the agent writes to /workspace/out always lands on " +
     "the host under a fixed prefix (SANDBOX_OUT_ROOT/<run-id>, default " +
-    "~/.sandbox); the returned artifacts list it.",
+    "~/.sandbox); the returned artifacts list it. If a run or session is ALREADY " +
+    "in progress, use sandbox_steer instead of launching another run.",
   args: {
     prompt: tool.schema
       .string()
@@ -251,6 +252,97 @@ export const run = tool({
   },
 });
 
+export const steer = tool({
+  description:
+    "Steer a sandbox run or session that is ALREADY in progress. Use this " +
+    "instead of starting another sandbox_run: re-running with a reworded prompt " +
+    "duplicates work, loses the context the agent built and can corrupt shared " +
+    "output. delivery='steer' (default) injects the message into the current " +
+    "turn; 'queue' waits until the turn ends; interrupt=true stops the current " +
+    "step so the agent sees the message immediately. Target the long-lived " +
+    "session (omit session/run_id) or a running task with run_id. If several " +
+    "sessions are running, it refuses and lists them with (running)/(idle).",
+  args: {
+    message: tool.schema
+      .string()
+      .describe("The correction or added instruction, sent to the running agent."),
+    delivery: tool.schema
+      .enum(["steer", "queue"])
+      .optional()
+      .describe(
+        "'steer' (default): inject now, mid-turn. 'queue': deliver after the current turn.",
+      ),
+    interrupt: tool.schema
+      .boolean()
+      .optional()
+      .describe("Stop the current step before the agent reads the message (redirect a wrong path)."),
+    session: tool.schema
+      .string()
+      .optional()
+      .describe("Session id (ses_...) when more than one exists; default: the running one."),
+    run_id: tool.schema
+      .string()
+      .optional()
+      .describe("Target a running detached task (run-...) instead of the session."),
+  },
+  async execute(args) {
+    const argv = ["steer"];
+    if (args.run_id) argv.push("--run", args.run_id);
+    if (args.session) argv.push("--session", args.session);
+    if (args.delivery === "queue") argv.push("--queue");
+    if (args.interrupt) argv.push("--interrupt");
+    argv.push("--", args.message);
+    const run = await spawnCli(argv, undefined, 60_000);
+    return {
+      title: `sandbox_steer${args.run_id ? ` ${args.run_id}` : ""}${args.session ? ` ${args.session}` : ""}`,
+      output: render(run),
+      metadata: {
+        run_id: args.run_id ?? null,
+        session: args.session ?? null,
+        delivery: args.delivery ?? "steer",
+        interrupt: args.interrupt ?? false,
+        exit: run.code,
+      },
+    };
+  },
+});
+
+export const peek = tool({
+  description:
+    "Bounded snapshot of a sandbox run or of the long-lived session: status and " +
+    "only the last N parts (truncated). This is the agent's view — never call " +
+    "watch (unbounded). Poll a detached run with it, then steer if the trajectory " +
+    "is wrong instead of starting another run.",
+  args: {
+    run_id: tool.schema
+      .string()
+      .optional()
+      .describe("Run id (e.g. 'run-20261017T150656Z-6816'). Omit = newest running run."),
+    session: tool.schema
+      .boolean()
+      .optional()
+      .describe("Peek the long-lived session instead of a run."),
+    lines: tool.schema
+      .number()
+      .int()
+      .positive()
+      .optional()
+      .describe("How many trailing parts to show (default 12)."),
+  },
+  async execute(args) {
+    const argv = ["peek"];
+    if (args.session) argv.push("--session");
+    if (!args.session && args.run_id) argv.push(args.run_id);
+    if (args.lines) argv.push("-n", String(args.lines));
+    const run = await spawnCli(argv, undefined, 60_000);
+    return {
+      title: args.session ? "sandbox_peek (session)" : `sandbox_peek ${args.run_id ?? "(newest)"}`,
+      output: render(run),
+      metadata: { run_id: args.run_id ?? null, session: args.session ?? false, exit: run.code },
+    };
+  },
+});
+
 export const logs = tool({
   description:
     "Network audit of a sandbox run: shows proxy.log (every internet request, " +
@@ -275,7 +367,8 @@ export const logs = tool({
 
 export const status = tool({
   description:
-    "Sandbox state: session, proxy and relay containers (running/stopped).",
+    "Sandbox state: session, proxy and relay containers, plus which session is " +
+    "currently running a turn (idle/running). Check it before steering.",
   args: {},
   async execute() {
     const run = await spawnCli(["status"], undefined, 60_000);

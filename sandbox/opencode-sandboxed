@@ -3,14 +3,16 @@
 # opencode-sandboxed — global CLI for opencode-sandbox (alias: opencode-sb).
 #
 #   opencode-sandboxed                      enter the OpenCode TUI (auto-starts)
-#   opencode-sandboxed run MSG...           send one message, print the reply
+#   opencode-sandboxed run MSG...           send one message to the session
+#   opencode-sandboxed steer MSG...         steer a running turn (--run ID for a task)
+#   opencode-sandboxed interrupt            stop the active turn
 #   opencode-sandboxed up / down            start / stop the session container
-#   opencode-sandboxed status               show session, proxy and relay status
+#   opencode-sandboxed status               session/proxy/relay + active turn
 #   opencode-sandboxed logs [RUN-ID]        tail session egress log, or a run log
 #   opencode-sandboxed task [OPTIONS]       run a one-shot sandboxed task
 #   opencode-sandboxed watch [RUN-ID]       follow a run live (--session: the session)
 #   opencode-sandboxed peek [RUN-ID] [-n N] bounded snapshot (--session: the session)
-#   opencode-sandboxed sessions             list the active session's sessions
+#   opencode-sandboxed sessions             list sessions with (running)/(idle)
 #   opencode-sandboxed models [--check]     list the model catalog; --check validates
 #   opencode-sandboxed clean                remove orphaned sandbox/proxy/relay
 #
@@ -61,7 +63,17 @@ case "$cmd" in
       exit 2
     fi
     ensure_session
-    docker exec "$SESSION" opencode run --standalone --auto --format json "$@"
+    # Shared background service (not --standalone): the turn stays steerable,
+    # and `steer`/`interrupt` talk to the same server. Pass --standalone to opt out.
+    docker exec "$SESSION" opencode run --auto --format json "$@"
+    ;;
+  steer)
+    shift
+    exec "$ROOT/run.sh" steer "$@"
+    ;;
+  interrupt)
+    shift
+    exec "$ROOT/run.sh" interrupt "$@"
     ;;
   task)
     shift
@@ -92,15 +104,7 @@ case "$cmd" in
     exec "$ROOT/run.sh" models "$@"
     ;;
   status)
-    session="$(docker ps -a --filter "name=$SESSION" --format '{{.Names}} ({{.State}})' 2>/dev/null | head -n1)"
-    proxy="$(docker ps -a --filter "name=$SESSION_PROXY" --format '{{.Names}} ({{.State}})' 2>/dev/null | head -n1)"
-    relay="$(docker ps -a --filter 'name=model-relay-' --format '{{.Names}} ({{.State}})' 2>/dev/null | head -n1)"
-    echo "session : ${session:-stopped}"
-    echo "proxy   : ${proxy:-stopped}"
-    echo "relay   : ${relay:-stopped}"
-    if [ -n "$session" ]; then
-      echo "  attach: opencode-sandboxed   (alias: opencode-sb)"
-    fi
+    exec "$ROOT/run.sh" status
     ;;
   logs)
     shift
@@ -114,11 +118,11 @@ case "$cmd" in
     exec docker logs -f "$SESSION_PROXY"
     ;;
   help|-h|--help)
-    sed -n '3,22p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '3,17p' "$0" | sed 's/^# \{0,1\}//'
     ;;
   *)
     echo "unknown command: $cmd" >&2
-    echo "try: opencode-sandboxed | run | task | watch | peek | sessions | up | down | status | logs | models | clean" >&2
+    echo "try: opencode-sandboxed | run | steer | interrupt | task | watch | peek | sessions | up | down | status | logs | models | clean" >&2
     exit 2
     ;;
 esac

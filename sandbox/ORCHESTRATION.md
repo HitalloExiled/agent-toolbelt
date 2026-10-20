@@ -107,6 +107,32 @@ opencode-sb sessions                # ids/titles, to target a specific session
 
 Same rule: poll `peek --session`; leave `watch --session` to the human.
 
+## Steering a run in flight
+
+A delegated run is a live process. If it is already running, **steer it — never
+launch another task with a reworded prompt** (duplicated work, lost context,
+possible corruption of shared output). This holds for a detached task and for
+the long-lived session.
+
+```bash
+opencode-sb sessions                    # id + (running)/(idle)
+opencode-sb steer "use the local model"                 # inject now
+opencode-sb steer --queue "after that, run the tests"   # after the turn
+opencode-sb steer --interrupt "stop; revert the last edit"  # stop + redirect
+opencode-sb steer --run run-20261020T… "use the mirror" # a detached task
+opencode-sb interrupt --session ses_…   # stop only
+```
+
+- `steer` posts to the container's OpenCode API over `docker exec`; it adds no
+  network exposure and works in `--sealed`.
+- Target: `--session` → the only running session → the only session at all.
+  With several running it refuses and prints them with `(running)`/`(idle)`.
+- `--interrupt` stops the current step and resumes with the message; plain
+  `interrupt` just stops.
+- Prefer `task --detach` when you expect to need course correction: a blocking
+  `sandbox_run` cannot be steered while you are waiting on it.
+- After steering, poll `peek` again — never `watch` (unbounded, human-only).
+
 ## Choosing isolation
 
 - **Default (enforced egress):** the agent has internet *only* through the

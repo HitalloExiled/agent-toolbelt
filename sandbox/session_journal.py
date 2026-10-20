@@ -102,7 +102,7 @@ def _part_lines(part):
     return []
 
 
-def cmd_peek(limit, sid_arg):
+def cmd_peek(limit, sid_arg, state=None):
     conn = connect()
     sid = pick_session(conn, sid_arg)
     if not sid:
@@ -133,8 +133,9 @@ def cmd_peek(limit, sid_arg):
                     entries.append(lines)
 
     short = sid[:14] + "…" if len(sid) > 15 else sid
+    state_txt = f" · {state}" if state else ""
     sys.stdout.write(
-        f"▶ session '{title}' ({short}) — {len(entries)} parts · updated {_ago(updated)}\n")
+        f"▶ session '{title}' ({short}) — {len(entries)} parts · updated {_ago(updated)}{state_txt}\n")
     if not entries:
         sys.stdout.write("  (no messages yet)\n")
     else:
@@ -286,37 +287,61 @@ def cmd_watch(sid_arg, from_start=False):
         time.sleep(0.6)
 
 
-def cmd_list():
+def cmd_list(active_ids=()):
+    """One line per session, with a (running)/(idle) marker.
+
+    Running = the id is in `/api/session/active` for this container's service.
+    The SQLite DB has no live status column, so run.sh supplies the set.
+    """
+    active = set(active_ids)
     conn = connect()
     rows = conn.execute(
         "select id,title,time_updated from session_v2 order by time_updated desc "
         "limit 20").fetchall()
+    if not rows:
+        sys.stdout.write("(no sessions yet)\n")
+        return
     for sid, title, updated in rows:
         n = conn.execute("select count(*) from session_message where session_id=?",
                          (sid,)).fetchone()[0]
-        sys.stdout.write(f"{sid}  {n:>4} msgs  {_ago(updated):>8}  {title}\n")
+        state = "running" if sid in active else "idle"
+        sys.stdout.write(f"{sid}  {n:>4} msgs  {_ago(updated):>8}  {title}  ({state})\n")
+
+
+def cmd_ids():
+    """Session ids only, newest first (used by run.sh to resolve a target)."""
+    conn = connect()
+    for (sid,) in conn.execute(
+            "select id from session_v2 order by time_updated desc limit 50"):
+        sys.stdout.write(sid + "\n")
 
 
 def main():
     argv = sys.argv[1:]
     if not argv:
-        sys.stderr.write("usage: session_journal.py peek [N] [SID] | watch [SID] | list\n")
+        sys.stderr.write("usage: session_journal.py peek [N] [SID] [state] | "
+                         "watch [SID] | list [running-id...] | ids\n")
         sys.exit(2)
     if argv[0] == "peek":
         limit = PEEK_DEFAULT
         sid = None
+        state = None
         for arg in argv[1:]:
             if arg.isdigit():
                 limit = int(arg)
+            elif arg in ("running", "idle"):
+                state = arg
             elif arg:
                 sid = arg
-        cmd_peek(limit, sid)
+        cmd_peek(limit, sid, state)
     elif argv[0] == "watch":
         from_start = "--from-start" in argv[1:]
         sid = next((a for a in argv[1:] if not a.startswith("-") and a), None)
         cmd_watch(sid, from_start)
     elif argv[0] == "list":
-        cmd_list()
+        cmd_list(argv[1:])
+    elif argv[0] == "ids":
+        cmd_ids()
     else:
         sys.stderr.write("unknown mode\n")
         sys.exit(2)
