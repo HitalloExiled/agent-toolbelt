@@ -255,14 +255,16 @@ It resolves symlinks, so it works from any directory:
 | Command | Does |
 |---|---|
 | `opencode-sb` | OpenCode TUI inside a session container (auto-starts it) |
-| `opencode-sb run "msg"` | one-shot message in the session, JSON reply |
+| `opencode-sb run "msg"` | one-shot message in the session; streams JSON events |
 | `opencode-sb task …` | one-shot sandboxed task (same flags as `run.sh task`) |
+| `opencode-sb steer "msg"` | steer a running turn: inject (default), `--queue`, or `--interrupt`; `--run ID` for a task |
+| `opencode-sb interrupt` | stop the active turn (`--session ID` / `--run ID` / `--resume`) |
 | `opencode-sb watch [RUN-ID]` | follow a run's full live transcript (human) |
 | `opencode-sb peek [RUN-ID] [-n N]` | bounded snapshot: status + last N messages |
 | `opencode-sb watch --session` | follow the active session live (human) |
 | `opencode-sb peek --session [-n N]` | bounded snapshot of the active session |
-| `opencode-sb sessions` | list recent sessions (id, messages, age, title) |
-| `opencode-sb status` | session / proxy / relay state |
+| `opencode-sb sessions` | list recent sessions (id, messages, age, title, `running`/`idle`) |
+| `opencode-sb status` | session / proxy / relay + active turn (`running`/`idle`) |
 | `opencode-sb logs [RUN-ID]` | follow the session egress log, or print a run's log |
 | `opencode-sb up` / `down` | start / stop the session container |
 | `opencode-sb models [--check]` | list the sandbox model catalog (`--check` validates refs) |
@@ -421,10 +423,10 @@ proxy/Dockerfile      tinyproxy logging proxy image
 proxy/tinyproxy.conf.in  proxy config template ({{SUBNET}} allow-list)
 relay/forward.py      localhost model relay (stdlib-only TCP forwarder)
 models.conf           model preference lists (free / local-large / local-parallel)
-run.sh                orchestrator engine (task / up / down / logs / models / clean)
+run.sh                orchestrator engine (task/steer/interrupt/watch/peek/sessions/status/up/down/logs/models/clean)
 host-firewall.sh      root helper: firewalld policy fencing containers off from
                       host services (apply / remove / status / install-unit)
-opencode-sandboxed    global CLI (tui / run / task / up / down / status / logs / models / clean)
+opencode-sandboxed    global CLI (tui/run/steer/interrupt/task/up/down/status/logs/models/clean)
 install.sh            installs the CLI symlinks (opencode-sandboxed, opencode-sb)
 ORCHESTRATION.md      playbook for a host agent that delegates to this sandbox
 runs/                 per-run artifacts (gitignored)

@@ -8,8 +8,9 @@ Nasceu de dois subsistemas:
   `notes_update` / `notes_confirm` / `notes_dispute` / `notes_retract` /
   `notes_history` / `notes_restore` / `notes_view` / `notes_search` / `notes_doctor`.
 - **`sandbox`** — delegação de trabalho com risco para um container Docker
-  descartável, via as tools `sandbox_run` / `sandbox_logs` / `sandbox_status`
-  (wrapper do CLI `opencode-sb`, em `sandbox/`).
+  descartável, via as tools `sandbox_run` / `sandbox_steer` / `sandbox_peek` /
+  `sandbox_logs` / `sandbox_status` (wrapper do CLI `opencode-sb`, em
+  `sandbox/`).
 
 Tudo é **conteúdo genérico** (`tools/`, `skills/`, `memory/`); o acoplamento
 com o OpenCode vive só no `install.sh`. Trocar de harness = reescrever o
@@ -30,7 +31,7 @@ agent-toolbelt/
 │   ├── notes.ts
 │   └── sandbox.ts
 ├── sandbox/                  # sandbox (era o repo opencode-sandbox; agora versionado aqui)
-│   ├── run.sh                # orquestrador (task/up/down/logs/models/clean)
+│   ├── run.sh                # orquestrador (task/steer/interrupt/watch/peek/sessions/status/up/down/logs/models/clean)
 │   ├── opencode-sandboxed    # CLI global (opencode-sb)
 │   ├── Dockerfile, proxy/, relay/
 │   ├── models.conf           # listas de preferência de modelo
@@ -159,9 +160,15 @@ exposta por nenhuma tool** — é para o humano, no terminal dele.
 | `notes_view` | mostra a nota inteira pelo id, em qualquer estado (retratada incluída, com 🚫) |
 | `notes_search` | busca; sem `query`, lista as últimas (disputadas por último; retratadas ocultas) |
 | `notes_doctor` | diagnostica memória/schema/FTS5 e o estado de confiança |
-| `sandbox_run` | tarefa isolada; devolve resposta final, exit code e artefatos |
+| `sandbox_run` | tarefa isolada; devolve a resposta final e o exit code |
+| `sandbox_steer` | corrige um run/sessão **em andamento**: injeta, enfileira (`delivery="queue"`) ou interrompe e redireciona (`interrupt=true`) |
+| `sandbox_peek` | visão limitada de um run/sessão: status + últimas N partes (nunca `watch`) |
 | `sandbox_logs` | audita a rede (`proxy.log`) de um run |
-| `sandbox_status` | estado dos containers do sandbox |
+| `sandbox_status` | estado dos containers e do turno ativo (`running`/`idle`) |
+
+O canal de retorno é a **resposta final** (texto). `/workspace/out` é o drop de
+artefatos do **usuário** (downloads, builds, screenshots) — o agente host nunca
+lê esse diretório nem o usa para receber resultados.
 
 Por que tools e não só a skill: o guardrail de `#problem` **garante** o formato
 (a skill só pede), a execução é via `argv` sem shell (conteúdo com aspas, `;`,
