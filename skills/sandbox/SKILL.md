@@ -1,6 +1,6 @@
 ---
 name: sandbox
-description: Disposable Docker sandbox that runs a separate OpenCode agent for risky work. Use ALWAYS before anything that could damage or expose this machine, such as installing or upgrading packages, touching services, kernel, /etc, disks or permissions, running untrusted code or dependencies, destructive or uncertain commands, processing potentially malicious files, or consulting dubious internet sources. The sandbox cannot see host files (input only via copy_in), returns files only from /workspace/out under a fixed host prefix, and its internet is logged or cut with sealed. Drive it with sandbox_run/sandbox_steer/sandbox_peek/sandbox_logs/sandbox_status or the opencode-sb CLI. When a run is already in progress, steer it with sandbox_steer instead of starting another run. Skip for quick read-only questions you answer locally.
+description: Disposable Docker sandbox that runs a separate OpenCode agent for risky work. It executes a brief you have already planned; it does not make the plan. Use ALWAYS before anything that could damage or expose this machine, such as installing or upgrading packages, touching services, kernel, /etc, disks or permissions, running untrusted code or dependencies, destructive or uncertain commands, processing potentially malicious files, or consulting dubious internet sources. The sandbox cannot see host files (input only via copy_in), returns files only from /workspace/out under a fixed host prefix, and its internet is logged or cut with sealed. Drive it with sandbox_run/sandbox_steer/sandbox_peek/sandbox_logs/sandbox_status or the opencode-sb CLI. When a run is already in progress, steer it with sandbox_steer instead of starting another run. Skip for quick read-only questions you answer locally.
 metadata:
   audience: any
   opencode/slash: "true"
@@ -14,9 +14,16 @@ the checklists.
 ## 1. What it is
 
 The sandbox is **a second OpenCode agent, running inside a throwaway Docker
-container on this machine**. You give it a task in plain language. It plans,
-runs commands, edits files and browses the web **inside the container**, then
+container on this machine**. You give it a concrete execution brief. It runs the
+commands, edits the files and browses the web **inside the container**, then
 returns a final answer plus whatever it wrote to `/workspace/out`.
+
+**Division of labor: you MUST plan; the sandbox only executes.** You own the
+goal, the approach, the exact steps and the definition of done. The sandbox runs
+commands, inspects files and reports evidence. Never hand it an open-ended
+"figure out how to…": decide first, then send a concrete execution brief. If you
+cannot specify the task yet, do the planning here — read the code, choose the
+approach — and only then delegate the execution.
 
 It is not a shell on your machine and it cannot see your files:
 
@@ -104,7 +111,8 @@ everything.
 ## 5. Your first run, step by step
 
 1. **Pick a mode** (section 3). For a quick isolated job, use `sandbox_run`.
-2. **Write a self-contained prompt** (section 6). The agent starts with an empty
+2. **Write the execution brief** (section 6). You have already decided the
+   approach; the prompt only states the steps. The agent starts with an empty
    `/workspace` and knows nothing about this machine.
 3. **Run it.** `sandbox_run` blocks until the task ends or times out.
 4. **Read the result.** The tool renders the final answer, the exit code and the
@@ -125,10 +133,14 @@ sandbox_run(
 
 Expected: answer `DONE`, exit `0`, one file in the artifacts dir.
 
-## 6. Writing the prompt
+## 6. Writing the execution brief
 
 The sandbox agent is competent but blind. Give it everything it needs:
 
+- **Tell it what to do, not what to decide.** You have already chosen the
+  approach. State the exact steps (or commands), the inputs, the acceptance
+  criteria and what to report. It may adapt mechanics (flags, paths), never
+  redesign the solution or widen the scope.
 - **State the goal and the definition of done.** "Validate the file, write a
   report, do not execute it."
 - **Say where to write.** Anything not written under `/workspace/out/` is lost
@@ -350,7 +362,7 @@ sandbox_run(
 **Start long work, then steer it:**
 
 ```bash
-id=$(opencode-sb task --detach --prompt "Build and test the project in /workspace/src; write logs to /workspace/out/." --copy-in ./src | awk '/^run /{print $2}')
+id=$(opencode-sb task --detach --prompt "Run /workspace/check.sh (already copied in); write its full log to /workspace/out/check.log and exit with its status." --copy-in ./check.sh | awk '/^run /{print $2}')
 opencode-sb peek "$id"              # running? on track?
 opencode-sb steer --run "$id" "Use the offline mirror; do not hit the network."
 opencode-sb peek "$id"              # confirm the correction landed
