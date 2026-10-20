@@ -9,5 +9,5 @@ __pycache__/
 *.db-journal
 *.export.json
 
-# Backups criados pelo install.sh ao substituir arquivos reais.
+# Backups criados pelo setup.sh ao substituir arquivos reais.
 *.bak-*

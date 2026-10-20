@@ -61,7 +61,7 @@ function runNb(args: string[], input?: string): Promise<Run> {
         stderr:
           stderr +
           `\ncould not run '${nbCommand()}': ${err.message}\n` +
-          "install it with ./install.sh in the agent-toolbelt repo (creates the symlink in ~/.local/bin).",
+          "run ./setup.sh in the agent-toolbelt repo (creates the symlink in ~/.local/bin).",
       }),
     );
     child.on("close", (code) => resolve({ code: code ?? -1, stdout, stderr }));

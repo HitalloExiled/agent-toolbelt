@@ -285,6 +285,9 @@ and retry.
 | Large context (long inputs, big files, long diffs) | `llama.cpp/qwen3.8-gguf-single192` (192K MTP) |
 | Task fans out to parallel agents | `llama.cpp/qwen3.8-gguf-duo128` (2x128K) or `...-quad` (4x64K) |
 
+`sandbox/models.conf` is the machine-readable preference list; the table above
+is a convenience copy.
+
 - Free models need internet egress, so **`--sealed` must use a local model**.
 - Omit `--model` to let the sandbox pick a mode-aware default (free online,
   `single192` sealed).
@@ -402,5 +405,4 @@ opencode-sb models --check  # validate preferred model refs
 opencode-sb clean           # remove orphaned containers
 ```
 
-Install: `sandbox/install.sh` in this repo. Full reference:
-`sandbox/README.md` and `sandbox/ORCHESTRATION.md`.
+Setup: `./setup.sh` in this repo (root). Full reference: `sandbox/README.md`.

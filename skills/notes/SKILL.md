@@ -186,7 +186,7 @@ notes doctor        # python/sqlite, FTS5, schema, count, index sync
 which notes         # should point to ~/.local/bin/notes
 ```
 
-If `notes` doesn't exist, the wrapper and schema live in `agent-toolbelt/memory/`; reinstall with `./install.sh` in the repo root. If the machine's `python3` lacks FTS5, `doctor` warns and search falls back to `LIKE` — memory keeps working.
+If `notes` doesn't exist, the CLI and schema live in `agent-toolbelt/memory/`; rerun `./setup.sh` in the repo root. If the machine's `python3` lacks FTS5, `doctor` warns and search falls back to `LIKE` — memory keeps working.
 
 ## Writing notes in English
 

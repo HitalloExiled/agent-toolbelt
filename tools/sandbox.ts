@@ -166,10 +166,9 @@ export const run = tool({
       .string()
       .optional()
       .describe(
-        "Sandbox model ref. Prefer 'opencode/deepseek-v4.1-flash-free' (free; " +
-          "needs egress, so NOT with sealed), 'llama.cpp/qwen3.8-gguf-single192' " +
-          "for large context, 'llama.cpp/qwen3.8-gguf-duo128' or '...quad' for " +
-          "parallel agents. Omit to let the sandbox pick the mode-aware default.",
+        "Sandbox model ref. Omit to let the sandbox pick the mode-aware default " +
+          "(free online, local for sealed). Run `opencode-sb models` for the live " +
+          "catalog; free models need egress, so never combine them with sealed.",
       ),
     copy_in: tool.schema
       .array(tool.schema.string())

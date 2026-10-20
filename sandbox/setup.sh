@@ -1,26 +1,28 @@
 #!/usr/bin/env bash
 #
-# install.sh — expose the opencode-sandbox CLI globally.
-# Symlinks into a PATH bin dir (default ~/.local/bin):
+# setup.sh — expose the opencode-sandbox CLI on PATH (links only, no packages).
+# Links into a PATH bin dir (default ~/.local/bin):
 #   opencode-sandboxed   canonical command
 #   opencode-sb          short alias
 #
-#   ./install.sh                 install into ~/.local/bin (default)
-#   BIN_DIR=~/bin ./install.sh   or choose the bin dir explicitly
-#   ./install.sh --bin ~/bin     same, via flag
-#   ./install.sh --uninstall     remove the symlinks
+#   ./setup.sh                 link into ~/.local/bin (default)
+#   BIN_DIR=~/bin ./setup.sh   or choose the bin dir explicitly
+#   ./setup.sh --bin ~/bin     same, via flag
+#   ./setup.sh --remove        remove the links
+#
+# Usually called by the repo's top-level setup.sh, which sets BIN_DIR.
 #
 set -euo pipefail
 
 ROOT="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BIN_DIR="${BIN_DIR:-$HOME/.local/bin}"
-UNINSTALL=0
+REMOVE=0
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --bin) BIN_DIR="${2:?--bin requires a directory}"; shift 2 ;;
-    --uninstall) UNINSTALL=1; shift ;;
-    -h|--help) sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    --remove) REMOVE=1; shift ;;
+    -h|--help) sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown option: $1" >&2; exit 2 ;;
   esac
 done
@@ -28,11 +30,10 @@ done
 SCRIPT="$ROOT/opencode-sandboxed"
 NAMES="opencode-sandboxed opencode-sb"
 
-if [ "$UNINSTALL" = 1 ]; then
+if [ "$REMOVE" = 1 ]; then
   for name in $NAMES; do
-    rm -f "$BIN_DIR/$name"
+    [ -L "$BIN_DIR/$name" ] && rm -f "$BIN_DIR/$name" && echo "removed: $BIN_DIR/$name"
   done
-  echo "removed $NAMES from $BIN_DIR"
   exit 0
 fi
 
@@ -42,8 +43,13 @@ chmod +x "$SCRIPT" "$ROOT/run.sh" 2>/dev/null || true
 
 mkdir -p "$BIN_DIR"
 for name in $NAMES; do
-  ln -sfn "$SCRIPT" "$BIN_DIR/$name"
-  echo "installed: $BIN_DIR/$name -> $SCRIPT"
+  dst="$BIN_DIR/$name"
+  if [ -e "$dst" ] && [ ! -L "$dst" ]; then
+    mv "$dst" "$dst.bak-$(date +%Y%m%d%H%M%S)"
+    echo "backup: $dst"
+  fi
+  ln -sfn "$SCRIPT" "$dst"
+  echo "linked: $dst -> $SCRIPT"
 done
 
 case ":$PATH:" in

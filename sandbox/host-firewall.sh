@@ -27,6 +27,7 @@
 # USAGE
 #   sudo ./host-firewall.sh install-unit   # one-time: persist + enable at boot
 #   sudo ./host-firewall.sh apply          # install now + self-test
+#   ./host-firewall.sh check               # is the guard in force? (exit 0/1)
 #   ./host-firewall.sh selftest            # re-check (no root); asserts the relay too
 #   ./host-firewall.sh status              # read-only, no root needed
 #   sudo ./host-firewall.sh remove         # remove rules/policy (keep unit)
@@ -71,6 +72,16 @@ firewalld_active() {
 policy_exists() {
   firewalld_active || return 1
   firewall-cmd --get-policies 2>/dev/null | tr ' ' '\n' | grep -qx "$POLICY"
+}
+
+# Root-free: is the guard in force? Single owner of the answer, used by
+# run.sh's preflight and by setup.sh.
+guard_active() {
+  if firewalld_active; then
+    policy_exists
+  else
+    [ -f "$STATE_FILE" ]
+  fi
 }
 
 # "18090/tcp" plus any extras. Extras without a protocol default to tcp.
@@ -246,6 +257,15 @@ sys.exit(0 if ok else 1)
 # commands
 # --------------------------------------------------------------------------- #
 
+cmd_check() {
+  if guard_active; then
+    log "guard: active"
+    return 0
+  fi
+  log "guard: not installed"
+  return 1
+}
+
 cmd_apply() {
   local no_selftest=0
   [ "${1:-}" = "--no-selftest" ] && no_selftest=1
@@ -375,9 +395,10 @@ case "${1:-status}" in
   apply)          shift; cmd_apply "$@" ;;
   remove)         shift; cmd_remove "$@" ;;
   selftest)       cmd_selftest ;;
+  check)          cmd_check ;;
   status)         cmd_status ;;
   install-unit)   cmd_install_unit ;;
   uninstall-unit) cmd_uninstall_unit ;;
   -h|--help|help) usage ;;
-  *) die "unknown command: $1 (try: apply | remove | selftest | status | install-unit | uninstall-unit)" ;;
+  *) die "unknown command: $1 (try: apply | remove | check | selftest | status | install-unit | uninstall-unit)" ;;
 esac

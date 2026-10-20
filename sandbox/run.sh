@@ -48,13 +48,8 @@ PROXY_PORT=8888
 # backend (127.0.0.1:BACKEND_PORT) is rewritten to host.docker.internal:RELAY.
 HOST_CONFIG="${OPENCODE_HOST_CONFIG:-$HOME/.config/opencode/opencode.jsonc}"
 BACKEND_PORT=18089
-RELAY_PORT=18090
+RELAY_PORT="${SANDBOX_RELAY_PORT:-18090}"
 NO_PROXY_LIST="model-relay,host.docker.internal,127.0.0.1,localhost"
-
-# Written by sandbox/host-firewall.sh (root); world-readable so run.sh can
-# verify the guard without root.
-FW_STATE_FILE="/run/opencode-sandbox/host-firewall.state"
-FW_POLICY="opencode-sandbox-host-guard"
 
 CPUS="${CPUS:-4}"
 MEM="${MEM:-8g}"
@@ -260,15 +255,11 @@ start_proxy() { # $1 = name, $2 = sandbox (internal) network, $3 = conf file
 host_firewall_preflight() {
   [ "${SANDBOX_SKIP_FW_CHECK:-0}" = "1" ] && return 0
 
-  local ok=0
-  if command -v firewall-cmd >/dev/null 2>&1 && firewall-cmd --state >/dev/null 2>&1; then
-    firewall-cmd --get-policies 2>/dev/null | tr ' ' '\n' | grep -qx "$FW_POLICY" && ok=1
-  elif [ -f "$FW_STATE_FILE" ]; then
-    # No firewalld (iptables fallback): the state file is the root-free proof.
-    ok=1
+  # The guard owns its own detection (policy name, fallback state file), so
+  # run.sh never has to know how it was installed.
+  if [ -x "$ROOT/host-firewall.sh" ] && "$ROOT/host-firewall.sh" check >/dev/null 2>&1; then
+    return 0
   fi
-
-  [ "$ok" = 1 ] && return 0
 
   if [ "${SANDBOX_REQUIRE_FW_CHECK:-0}" = "1" ]; then
     log "error: host firewall guard is not installed and SANDBOX_REQUIRE_FW_CHECK=1."
@@ -640,7 +631,7 @@ session_active_ids() { # $1 = container -> one session id per line
 }
 
 session_all_ids() { # $1 = container -> newest first
-  docker exec -i "$1" python3 - ids < "$ROOT/session_journal.py" 2>/dev/null || true
+  docker exec -i "$1" python3 - session-ids < "$ROOT/journal.py" 2>/dev/null || true
 }
 
 session_state() { # $1 = container, $2 = sid -> running|idle
@@ -655,7 +646,7 @@ session_newest_id() { # $1 = container
 list_sessions() { # $1 = container
   local -a active=()
   mapfile -t active < <(session_active_ids "$1")
-  docker exec -i "$1" python3 - list "${active[@]}" < "$ROOT/session_journal.py"
+  docker exec -i "$1" python3 - session-list "${active[@]}" < "$ROOT/journal.py"
 }
 
 # Resolve the steering target: explicit id, the only running session, the only
@@ -1036,10 +1027,10 @@ cmd_watch() {
   if [ "$session" = 1 ]; then
     session_running || { log "no running session (start one: opencode-sb up)"; exit 1; }
     if [ "$from_start" = 1 ]; then
-      exec docker exec -i "$SESSION" python3 - watch --from-start "$arg" \
-        < "$ROOT/session_journal.py"
+      exec docker exec -i "$SESSION" python3 - session-watch --from-start "$arg" \
+        < "$ROOT/journal.py"
     fi
-    exec docker exec -i "$SESSION" python3 - watch "$arg" < "$ROOT/session_journal.py"
+    exec docker exec -i "$SESSION" python3 - session-watch "$arg" < "$ROOT/journal.py"
   fi
   local runid dir
   runid="$(resolve_run "$arg")"
@@ -1050,7 +1041,7 @@ cmd_watch() {
     log "python3 not found; falling back to a raw tail of result.json"
     exec tail -f "$dir/result.json"
   fi
-  exec python3 -u "$ROOT/journal.py" watch "$dir"
+  exec python3 -u "$ROOT/journal.py" run-watch "$dir"
 }
 
 # List the running session's sessions (id, message count, age, title).
@@ -1201,8 +1192,8 @@ cmd_peek() {
     session_running || { log "no running session (start one: opencode-sb up)"; exit 1; }
     local sid="${runid:-$(session_newest_id "$SESSION")}"
     if [ -z "$sid" ]; then log "no sessions yet"; exit 1; fi
-    exec docker exec -i "$SESSION" python3 - peek "$limit" "$sid" "$(session_state "$SESSION" "$sid")" \
-      < "$ROOT/session_journal.py"
+    exec docker exec -i "$SESSION" python3 - session-peek "$limit" "$sid" "$(session_state "$SESSION" "$sid")" \
+      < "$ROOT/journal.py"
   fi
   runid="$(resolve_run "$runid")"
   if [ -z "$runid" ]; then log "no runs in $RUNS_DIR"; exit 1; fi
@@ -1216,7 +1207,7 @@ cmd_peek() {
     docker ps --format '{{.Names}}' 2>/dev/null | grep -qx "sandbox-$runid" \
       && state="running" || state="done"
   fi
-  exec python3 -u "$ROOT/journal.py" peek "$dir" "$limit" "$state"
+  exec python3 -u "$ROOT/journal.py" run-peek "$dir" "$limit" "$state"
 }
 
 cmd_clean() {
