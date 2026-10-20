@@ -15,7 +15,8 @@ Modes:
                   print a BOUNDED snapshot: run status plus only the last N
                   message/tool entries (default 12), each clipped. Meant for a
                   *host agent* checking progress without pulling the full
-                  transcript into its context.
+                  transcript into its context. It never lists /workspace/out:
+                  that directory is the user's artifact drop, not a channel.
 
 Event types handled: text (assistant message), tool_use (tool + input/error).
 step_start / step_finish are bookkeeping and ignored.
@@ -28,7 +29,6 @@ import time
 PEEK_DEFAULT = 12
 NOTE_WIDTH = 160   # tool-call summary width
 TEXT_WIDTH = 320   # per-line width in peek (watch prints full text)
-OUT_LIST_MAX = 15  # output dir entries shown in a peek
 
 
 def _one_line(value, limit=NOTE_WIDTH):
@@ -190,7 +190,6 @@ def _ago(ts_ms):
 def peek(run_dir, limit=PEEK_DEFAULT, state=None):
     result = os.path.join(run_dir, "result.json")
     marker = os.path.join(run_dir, "exit")
-    hostout_file = os.path.join(run_dir, "hostout")
 
     entries = []       # list[list[str]] — one per text/tool event
     events = 0
@@ -227,21 +226,6 @@ def peek(run_dir, limit=PEEK_DEFAULT, state=None):
         for entry in shown:
             for ln in entry:
                 sys.stdout.write(ln + "\n")
-
-    hostout = ""
-    try:
-        if os.path.exists(hostout_file):
-            hostout = open(hostout_file).read().strip()
-    except Exception:
-        pass
-    if hostout and os.path.isdir(hostout):
-        try:
-            items = sorted(os.listdir(hostout))
-        except Exception:
-            items = []
-        if items:
-            more = "" if len(items) <= OUT_LIST_MAX else f" (+{len(items) - OUT_LIST_MAX} more)"
-            sys.stdout.write(f"output: {hostout}/  ({', '.join(items[:OUT_LIST_MAX])}{more})\n")
 
     if running:
         sys.stdout.write(f"follow live: opencode-sb watch {os.path.basename(run_dir)}\n")

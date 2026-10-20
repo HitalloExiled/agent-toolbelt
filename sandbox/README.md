@@ -34,8 +34,10 @@ Per task:
    daemon, so all transfer uses `docker exec` stdio).
 3. Inside: `opencode run --auto --format json "<prompt>"` — on the container's
    background service, so a running turn is steerable (`steer --run <run-id>`).
-4. Deliverables (whatever the agent wrote to `/workspace/out`) are on the host
-   prefix; `runs/<run-id>/` holds the rest, and the containers are removed.
+4. The task's answer comes back as the final text in `result.json`;
+   `/workspace/out` is the **user's** artifact drop (downloads, builds,
+   screenshots), not a channel back to the host agent. `runs/<run-id>/` keeps
+   the run metadata, and the containers are removed.
 
 ## Model relay
 
@@ -50,12 +52,14 @@ tasks (started on demand); `./run.sh clean` removes it.
 
 ## Security model
 
-- **Host access is input-only plus a fixed output prefix.** Files enter via
-  `--copy-in`; everything the sandbox writes to `/workspace/out` lands in
-  `SANDBOX_OUT_ROOT/<run-id>/` on the host (default `~/.sandbox`). That mount is
-  **rw**, so the untrusted agent can write/overwrite/delete anything under the
-  prefix — but the path is fixed by the human, never chosen by the task caller
-  (see *Host output* below).
+- **Host access is input-only plus a user artifact drop.** Files enter via
+  `--copy-in`; files the *user* asked to collect (downloads, builds, screenshots)
+  are written to `/workspace/out`, which lands in `SANDBOX_OUT_ROOT/<run-id>/`
+  on the host (default `~/.sandbox`). That mount is **rw**, so the untrusted
+  agent can write/overwrite/delete anything under the prefix — but the path is
+  fixed by the human, never chosen by the task caller (see *User artifact drop*
+  below). It is **not** a communication channel: the answer comes back as text,
+  and the host agent must never read or list it.
 - **Egress is enforced and audited.** The sandbox network is `--internal`, so
   containers have no route to the internet at all. The only way out is the
   dual-homed tinyproxy (internal side toward the sandbox, egress side to the
@@ -115,17 +119,21 @@ tasks (started on demand); `./run.sh clean` removes it.
   proxy to an allowed domain — that traffic is recorded in `proxy.log` (which
   is why you audit it) but not prevented. Use `--sealed` for untrusted input.
 
-## Host output (`SANDBOX_OUT_ROOT`) — always on
+## User artifact drop (`SANDBOX_OUT_ROOT`) — always on
 
 `/workspace/out` is **always** a real host directory: every run bind-mounts
-`SANDBOX_OUT_ROOT/<run-id>/` **rw** at `/workspace/out`. Whatever the sandbox
-writes as its deliverable is thus on the host immediately, owned by you
-(uid 1000) — there is no `runs/<run-id>/out` copy, and nothing is lost when the
-container is removed.
+`SANDBOX_OUT_ROOT/<run-id>/` **rw** at `/workspace/out`. Files the *user* asked
+to collect (downloads, builds, screenshots) appear there immediately, owned by
+them (uid 1000) — there is no `runs/<run-id>/out` copy, and nothing is lost when
+the container is removed.
+
+**Not a communication channel.** The sandbox's answer is its final message
+(`result.json`); never route reports through `/workspace/out`, and the host
+agent must never read, list or parse it. Only the human collects from here.
 
 - The prefix root is **fixed by the human only**, via `SANDBOX_OUT_ROOT`
   (default `~/.sandbox`). A task caller cannot choose it.
-- The interactive session writes to `SANDBOX_OUT_ROOT/session/`.
+- The interactive session's user artifact drop is `SANDBOX_OUT_ROOT/session/`.
 - If the root cannot be created (e.g. `$HOME`'s own root is read-only in the
   OpenCode agent shell), `run.sh` warns and falls back to `runs/host/` — still a
   fixed prefix, just inside this repo. Set `SANDBOX_OUT_ROOT` to pin it.
@@ -138,9 +146,9 @@ no disk quota). Symlinks cannot escape it (the container has its own mount
 namespace), but keep the root a dedicated scratch location, not a precious tree.
 
 ```bash
-# default prefix: ~/.sandbox/<run-id>/
-opencode-sb task --prompt "fetch the data and write /workspace/out/report.csv"
-ls ~/.sandbox/run-*/report.csv         # written by the sandbox, owned by you
+# the user wants a downloadable file: ask for that file only
+opencode-sb task --prompt "Download the ISO to /workspace/out/image.iso and reply with its sha256."
+ls ~/.sandbox/run-*/image.iso   # human collects it; the host agent must not
 
 # override the prefix (human-only, via the environment)
 SANDBOX_OUT_ROOT=/tmp/sbx opencode-sb task --prompt "…"
@@ -289,10 +297,10 @@ sudo ./host-firewall.sh install-unit
 # One-shot task, from anywhere once installed (builds images on first run)
 opencode-sb task \
   --model llama.cpp/qwen3.8-gguf-max \
-  --prompt "Write the word OK to /workspace/out/status.txt"
+  --prompt "Reply with exactly: OK"
 
 # Task with input files, sealed (no internet)
-opencode-sb task --sealed --copy-in ./my-dir --prompt "refactor X, put result in /workspace/out"
+opencode-sb task --sealed --copy-in ./my-dir --prompt "Refactor X as described; reply with a unified diff."
 
 # Interactive session
 opencode-sb                  # OpenCode TUI inside the sandbox
@@ -302,9 +310,9 @@ opencode-sb logs             # follow the session egress log
 opencode-sb down
 
 # Inspect a finished run
-cat runs/<run-id>/result.json
-cat runs/<run-id>/hostout            # path of the host output dir
-ls  "$(cat runs/<run-id>/hostout)"   # deliverables, written by the sandbox
+cat runs/<run-id>/result.json        # final answer + events (the result channel)
+cat runs/<run-id>/hostout            # path of the user's artifact drop
+ls  "$(cat runs/<run-id>/hostout)"   # (human) collect artifacts; host agents must not
 opencode-sb logs <run-id>            # or: ./run.sh logs <run-id>
 
 opencode-sb clean            # remove orphaned containers
@@ -382,7 +390,7 @@ opencode-sb models --check    # validate the preferred refs (exit != 0 if gone)
 | `stderr.log` | OpenCode stderr/log output |
 | `proxy.conf` | the tinyproxy config used (subnet allow-list) |
 | `proxy.log` | every request the task made through the proxy |
-| `hostout` | path of the host output dir for this run (`SANDBOX_OUT_ROOT/<run-id>`) |
+| `hostout` | path of the user's artifact drop for this run (`SANDBOX_OUT_ROOT/<run-id>`); never read it |
 | `exit` | the run's exit code, written last when it finishes (watchers stop on it) |
 
 Exit code: `0` success, `124` timeout, other = task failed.
@@ -399,7 +407,7 @@ Exit code: `0` success, `124` timeout, other = task failed.
 | `SANDBOX_HOME_TMPFS_SIZE` | `1g` | cap per state dir (`~/.cache`, `~/.local`, `~/.npm`, `~/.bun`, `~/.config`) |
 | `SANDBOX_WEBSEARCH_PROVIDER` | host value / `random` | websearch provider seeded into the sandbox DB |
 | `OPENCODE_HOST_CONFIG` | `~/.config/opencode/opencode.jsonc` | base config for the sandbox |
-| `SANDBOX_OUT_ROOT` | `~/.sandbox` | fixed host output prefix (`<root>/<run-id>`; fallback `runs/host` if uncreatable) |
+| `SANDBOX_OUT_ROOT` | `~/.sandbox` | fixed user artifact prefix (`<root>/<run-id>`; fallback `runs/host` if uncreatable) |
 
 ## Layout
 

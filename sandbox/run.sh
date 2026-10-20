@@ -14,9 +14,11 @@
 #   ./run.sh models [--check]                  list the sandbox model catalog
 #   ./run.sh clean                             remove orphaned sandbox/proxy containers
 #
-# Artifacts: runs/<run-id>/ (result.json, stderr.log, proxy.log, exit)
-# Host output: SANDBOX_OUT_ROOT/<run-id>/ (default ~/.sandbox), mounted rw at
+# Artifacts: runs/<run-id>/ (result.json = final answer, stderr.log, exit)
+# User output: SANDBOX_OUT_ROOT/<run-id>/ (default ~/.sandbox), mounted rw at
 #              /workspace/out — a fixed prefix, never chosen by the caller.
+#              This is the USER's artifact drop, not a channel: the host agent
+#              never reads it; the answer is the final text in result.json.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -103,8 +105,9 @@ task options:
   --rebuild             rebuild the worker/proxy images before running
 
 Environment: CPUS, MEM, TIMEOUT, OPENCODE_HOST_CONFIG, REBUILD, SANDBOX_OUT_ROOT
-  Sandbox output lands in SANDBOX_OUT_ROOT/<run-id>/ (default ~/.sandbox),
-  bind-mounted rw at /workspace/out. The prefix is fixed by the human only.
+  User artifacts land in SANDBOX_OUT_ROOT/<run-id>/ (default ~/.sandbox),
+  bind-mounted rw at /workspace/out. The prefix is fixed by the human only; the
+  host agent must never read it (the answer is the final text, not a file).
   Model preferences live in models.conf (ordered; first available wins).
   DOCKER_HOST must point at the machine daemon (from a sandboxed shell:
   export DOCKER_HOST=unix:///var/run/docker.sock).
@@ -574,9 +577,9 @@ seed_skills() { # $1 = container name
   done
 }
 
-# Resolve the FIXED host output root. The sandbox always writes its
-# /workspace/out here, under <run-id>/ (tasks) or session/ (interactive). This
-# is NOT the caller's choice: only the human sets the root, via the environment
+# Resolve the FIXED user artifact root. The sandbox writes files the user asked
+# to collect here, under <run-id>/ (tasks) or session/ (interactive). This is
+# NOT the caller's choice: only the human sets the root, via the environment
 # (SANDBOX_OUT_ROOT, default ~/.sandbox). A fallback keeps runs working where
 # the preferred root cannot be created (e.g. the OpenCode agent shell, where
 # $HOME's own root is read-only); dangerous roots are refused.
@@ -773,7 +776,7 @@ cmd_task() {
   local run_dir="$RUNS_DIR/$runid"
   mkdir -p "$run_dir/config"
 
-  # Fixed host output prefix (never caller-chosen).
+  # Fixed user artifact prefix (never caller-chosen).
   local out_root out_dir
   out_root="$(prepare_out_root)"
   out_dir="$out_root/$runid"
@@ -807,9 +810,9 @@ cmd_task() {
   create_flags="$(worker_create_flags "$net")"
   env="$(worker_env "$proxy_name")"
 
-  # /workspace/out is bind-mounted to the fixed host prefix, so the sandbox's
-  # deliverables land on the host directly (nothing is collected into
-  # runs/<id>/out).
+  # /workspace/out is bind-mounted to the fixed host prefix: files the user
+  # asked to collect land there directly (nothing is copied into runs/<id>/out).
+  # The host agent must not read it; the answer is in result.json.
   local -a mount_flags=(-v "$out_dir:/workspace/out:rw")
 
   # NOTE: --entrypoint overrides the image ENTRYPOINT (opencode); without it
@@ -878,7 +881,7 @@ cmd_task() {
       > "$run_dir/result.json" 2> "$run_dir/stderr.log" || rc=$?
   fi
 
-  # Record where the host output lives (the fixed prefix), for tooling.
+  # Record the user artifact path (fixed prefix) for tooling; never read it.
   printf '%s\n' "$out_dir" > "$run_dir/hostout"
 
   if [ -n "$proxy_name" ]; then
@@ -896,7 +899,7 @@ cmd_task() {
   log "task $runid finished (exit $rc)"
   log "  result : $run_dir/result.json"
   log "  stderr : $run_dir/stderr.log"
-  log "  out    : $out_dir/ (host)"
+  log "  user artifacts: $out_dir/ (for the user; do not read)"
   if [ -f "$run_dir/proxy.log" ]; then log "  proxy  : $run_dir/proxy.log"; fi
   # The `exit` marker is written last: `watch` follows it, and `peek` reads it
   # to report completion (rather than racing the container teardown).
@@ -979,7 +982,7 @@ cmd_up() {
   seed_skills "$SESSION"
 
   log "session up: $SESSION"
-  log "  out   : $out_dir/ (host)"
+  log "  user artifacts: $out_dir/ (for the user; do not read)"
   log "  interactive : opencode-sandboxed   (or: docker exec -it $SESSION opencode)"
   log "  one-shot    : docker exec $SESSION opencode run --auto \"message\""
   log "  steer       : opencode-sb steer \"correction\"   (queue: --queue, stop: --interrupt)"

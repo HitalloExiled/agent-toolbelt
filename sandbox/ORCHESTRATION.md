@@ -34,16 +34,18 @@ directory.
   With `--detach` it prints the run id and returns immediately — then poll it
   with `peek` (see *Monitoring a run*).
 - **Exit code**: `0` = success, `124` = timeout, other = failure.
-- **Artifacts** in `runs/<run-id>/`:
-  - `result.json` — the task's final answer/JSON; read this first.
-  - `hostout` — path of the host output dir for this run.
+- **Run files** in `runs/<run-id>/`:
+  - `result.json` — the task's final answer/JSON; the only result channel.
+  - `hostout` — path of the user's artifact drop for this run; never read it.
   - `exit` — the run's exit code, written last when it finishes.
   - `proxy.log` — audit of every internet request (domains, URLs).
   - `stderr.log` — OpenCode logs.
-- **Host output** (always): whatever the sandbox wrote to `/workspace/out` is in
-  the dir named by `hostout` — `SANDBOX_OUT_ROOT/<run-id>/` (default
-  `~/.sandbox`). The prefix is set by the human via `SANDBOX_OUT_ROOT`; a task
-  caller cannot choose it (falls back to `runs/host/` if uncreatable).
+- **User artifact drop** (always): files the *user* asked to collect (downloads,
+  builds, screenshots) are in the dir named by `hostout` —
+  `SANDBOX_OUT_ROOT/<run-id>/` (default `~/.sandbox`). It is **not** a return
+  channel: the answer is in `result.json`/the final message. The prefix is set
+  by the human via `SANDBOX_OUT_ROOT`; a task caller cannot choose it (falls
+  back to `runs/host/` if uncreatable).
 
 ## Prompt rules
 
@@ -51,9 +53,10 @@ directory.
   host filesystem. Make the prompt self-contained.
 - If the task needs input files, pass them explicitly:
   `--copy-in /path/to/file` (repeatable). They land in `/workspace/<name>`.
-- Instruct the agent to write deliverables to `/workspace/out/` — that always
-  lands on the host, in the fixed prefix (`SANDBOX_OUT_ROOT/<run-id>/`), and is
-  the only channel results come back through.
+- **Put the answer in the final message.** Reports, JSON or diffs come back as
+  text. Never ask the agent to write its answer to `/workspace/out`, and never
+  read that directory: it is the user's artifact drop for files they asked to
+  keep (downloads, builds, screenshots).
 - Long prompts: write them to a temp file and use `--prompt-file <file>`
   (`--prompt-file -` reads stdin).
 - **Model selection.** Prefer the free provider, fall back to local: most tasks
@@ -91,7 +94,7 @@ opencode-sb peek                 # newest running run, if you lost the id
 
 `peek` returns a small, fixed block: the run status (running + last-activity, or
 finished + exit code), the last N messages (tool calls and assistant text, each
-truncated), and the output files. Poll as often as you like.
+truncated). Poll as often as you like.
 
 Reserve `opencode-sb watch <run-id>` for a **human** — it follows the full live
 transcript until the run ends. Don't call it from the host agent.

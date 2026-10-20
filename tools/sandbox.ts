@@ -5,15 +5,16 @@
  * `sandbox` skill before delegating: it says *when* to delegate and the prompt
  * contract.
  *
- * The sandbox does not see the host filesystem: input only via `copy_in`,
- * output only via whatever the agent writes to /workspace/out (returned in
- * `out/`). Internet goes through a proxy that logs everything (auditable via
+ * The sandbox does not see the host filesystem: input only via `copy_in`.
+ * /workspace/out is the user's artifact drop (downloads, builds, screenshots),
+ * not a channel: the host agent reads the final answer, never that directory.
+ * Internet goes through a proxy that logs everything (auditable via
  * sandbox_logs) or is cut with `sealed`.
  */
 
 import { tool } from "@opencode-ai/plugin";
 import { spawn } from "node:child_process";
-import { existsSync, readFileSync, readdirSync, realpathSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -123,15 +124,7 @@ function finalAnswer(runDir: string): string | null {
   return null;
 }
 
-function listDir(dir: string): string[] {
-  try {
-    return readdirSync(dir).sort();
-  } catch {
-    return [];
-  }
-}
-
-/** Host output dir (SANDBOX_OUT_ROOT/<run-id>) recorded by run.sh. */
+/** User artifact dir (SANDBOX_OUT_ROOT/<run-id>) recorded by run.sh. */
 function readHostOut(runDir: string): string | null {
   try {
     const p = readFileSync(join(runDir, "hostout"), "utf8").trim();
@@ -151,23 +144,23 @@ function render(run: Run): string {
 export const run = tool({
   description:
     "Run a task in a disposable Docker sandbox (ephemeral OpenCode, no access " +
-    "to the host filesystem) and return the final answer, exit code and " +
-    "artifacts. BLOCKING: can take minutes. Use for risky work (installing/" +
+    "to the host filesystem) and return the final answer and exit code. " +
+    "BLOCKING: can take minutes. Use for risky work (installing/" +
     "testing packages, running untrusted code, destructive commands, suspicious " +
-    "input, dubious internet sources). The prompt must be self-contained: the " +
-    "agent starts with /workspace empty and writes deliverables to " +
-    "/workspace/out. Prefer a free model; fall back to local (see the sandbox " +
-    "skill's Model selection). After any task, audit the network with " +
-    "sandbox_logs. Whatever the agent writes to /workspace/out always lands on " +
-    "the host under a fixed prefix (SANDBOX_OUT_ROOT/<run-id>, default " +
-    "~/.sandbox); the returned artifacts list it. If a run or session is ALREADY " +
+    "input, dubious internet sources). The prompt must be a self-contained " +
+    "execution brief: the agent starts with /workspace empty. Prefer a free " +
+    "model; fall back to local (see the sandbox skill's Model selection). After " +
+    "any task, audit the network with sandbox_logs. The final answer is the " +
+    "only result channel: never ask the sandbox to put its answer in " +
+    "/workspace/out, and never read or list that directory (it is the user's " +
+    "artifact drop, under SANDBOX_OUT_ROOT). If a run or session is ALREADY " +
     "in progress, use sandbox_steer instead of launching another run.",
   args: {
     prompt: tool.schema
       .string()
       .describe(
-        "Complete, self-contained task. Instruct the agent to write the " +
-          "deliverable to /workspace/out/.",
+        "Complete, self-contained execution brief. The result must be in the " +
+          "final message; /workspace/out is only for files the user asked to collect.",
       ),
     model: tool.schema
       .string()
@@ -222,7 +215,6 @@ export const run = tool({
     }
     lines.push(render(run));
 
-    let artifacts: string[] = [];
     let answer: string | null = null;
     const root = runsDir();
     let hostOut: string | null = null;
@@ -230,14 +222,12 @@ export const run = tool({
       const dir = join(root, runId);
       answer = finalAnswer(dir);
       hostOut = readHostOut(dir);
-      artifacts = hostOut ? listDir(hostOut) : [];
       if (answer) {
         lines.push("", "— final answer (result.json) —", answer);
       }
-      lines.push("", `artifacts: ${dir}/`);
+      lines.push("", `run dir: ${dir}/`);
       if (hostOut) {
-        const n = artifacts.length;
-        lines.push(`host out: ${hostOut}/ (${n} entr${n === 1 ? "y" : "ies"})`);
+        lines.push(`user artifact drop: ${hostOut}/ (for the user; do not read)`);
       }
       if (run.code !== 0 && !existsSync(join(dir, "proxy.log"))) {
         lines.push("proxy.log absent (sealed run, or no network requests)");
@@ -247,7 +237,7 @@ export const run = tool({
     return {
       title: runId ? `sandbox_run ${runId} (exit ${run.code})` : `sandbox_run (exit ${run.code})`,
       output: lines.filter((l) => l !== undefined).join("\n"),
-      metadata: { run_id: runId, exit_code: run.code, host_out: hostOut, artifacts, answer },
+      metadata: { run_id: runId, exit_code: run.code, host_out: hostOut, answer },
     };
   },
 });

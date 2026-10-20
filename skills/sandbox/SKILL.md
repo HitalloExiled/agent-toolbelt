@@ -1,6 +1,6 @@
 ---
 name: sandbox
-description: Disposable Docker sandbox that runs a separate OpenCode agent for risky work. It executes a brief you have already planned; it does not make the plan. Use ALWAYS before anything that could damage or expose this machine, such as installing or upgrading packages, touching services, kernel, /etc, disks or permissions, running untrusted code or dependencies, destructive or uncertain commands, processing potentially malicious files, or consulting dubious internet sources. The sandbox cannot see host files (input only via copy_in), returns files only from /workspace/out under a fixed host prefix, and its internet is logged or cut with sealed. Drive it with sandbox_run/sandbox_steer/sandbox_peek/sandbox_logs/sandbox_status or the opencode-sb CLI. When a run is already in progress, steer it with sandbox_steer instead of starting another run. Skip for quick read-only questions you answer locally.
+description: Disposable Docker sandbox that runs a separate OpenCode agent for risky work. It executes a brief you have already planned; it does not make the plan. Use ALWAYS before anything that could damage or expose this machine, such as installing or upgrading packages, touching services, kernel, /etc, disks or permissions, running untrusted code or dependencies, destructive or uncertain commands, processing potentially malicious files, or consulting dubious internet sources. The sandbox cannot see host files (input only via copy_in), its internet is logged or cut with sealed, and /workspace/out is the user's artifact drop, never a channel back to you. Drive it with sandbox_run/sandbox_steer/sandbox_peek/sandbox_logs/sandbox_status or the opencode-sb CLI. When a run is already in progress, steer it with sandbox_steer instead of starting another run. Skip for quick read-only questions you answer locally.
 metadata:
   audience: any
   opencode/slash: "true"
@@ -16,7 +16,7 @@ the checklists.
 The sandbox is **a second OpenCode agent, running inside a throwaway Docker
 container on this machine**. You give it a concrete execution brief. It runs the
 commands, edits the files and browses the web **inside the container**, then
-returns a final answer plus whatever it wrote to `/workspace/out`.
+returns a final answer — the **only** result channel.
 
 **Division of labor: you MUST plan; the sandbox only executes.** You own the
 goal, the approach, the exact steps and the definition of done. The sandbox runs
@@ -30,7 +30,7 @@ It is not a shell on your machine and it cannot see your files:
 | It can | It cannot |
 |---|---|
 | read files you explicitly `copy_in` (they appear at `/workspace/<name>`) | read any other host file |
-| write to `/workspace/out` (returned to the host) | write anywhere else on the host |
+| write to `/workspace/out` (the user's artifact drop) | write anywhere else on the host |
 | reach the internet through a logging proxy, or not at all with `sealed` | reach host services, the Docker socket, or the LAN |
 | run commands as uid 1000 inside the container | gain root, mount filesystems, load modules, use setuid binaries |
 
@@ -39,6 +39,12 @@ The container has a read-only root filesystem, no Linux capabilities,
 writable host surface is `/workspace/out`, mapped to
 `SANDBOX_OUT_ROOT/<run-id>/` (default `~/.sandbox/<run-id>/`). The human sets
 that prefix; you cannot choose it.
+
+**`/workspace/out` is the user's artifact drop, not a channel.** It exists so the
+user can collect files they care about (downloads, builds, screenshots). It is
+**not** how the sandbox reports back, and you **MUST NOT** read, list, parse or
+otherwise touch it. The sandbox's answer comes back as the final message — use
+that. Only mention the drop when the user asked for a file, and only its path.
 
 **Isolation is container-grade, not VM-grade.** It shares the host kernel. Do
 not paste secrets, tokens or private keys into a prompt or `copy_in`.
@@ -66,8 +72,8 @@ Use it when the work is **risky, dirty, or unknown**:
 Do **not** use it for:
 
 - quick read-only questions about docs or this repo — answer directly;
-- work that must read/write host files outside the fixed output dir — tell the
-  user; input is `copy_in`-only by design;
+- work that must read or write host files in place — the sandbox only receives
+  `copy_in` and only writes to the user's artifact drop; tell the user;
 - anything needing a secret you would not hand to an untrusted process.
 
 ## 3. Two modes
@@ -89,7 +95,7 @@ waiting on it, so for work that may need course correction start it detached
 
 | Tool | What it does | Main inputs | What you get |
 |---|---|---|---|
-| `sandbox_run` | runs a **one-shot task** and waits | `prompt`, `copy_in[]`, `model`, `sealed`, `timeout`, `cpus`, `mem`, `title` | final answer, exit code, artifacts dir |
+| `sandbox_run` | runs a **one-shot task** and waits | `prompt`, `copy_in[]`, `model`, `sealed`, `timeout`, `cpus`, `mem`, `title` | final answer, exit code |
 | `sandbox_steer` | sends a message into a **running** turn | `message`, `delivery`, `interrupt`, `session`, `run_id` | delivery report |
 | `sandbox_peek` | bounded snapshot of a run/session | `run_id`, `session`, `lines` | status + last N parts |
 | `sandbox_logs` | shows the egress audit of a run | `run_id` | `proxy.log` |
@@ -115,23 +121,23 @@ everything.
    approach; the prompt only states the steps. The agent starts with an empty
    `/workspace` and knows nothing about this machine.
 3. **Run it.** `sandbox_run` blocks until the task ends or times out.
-4. **Read the result.** The tool renders the final answer, the exit code and the
-   path of the artifacts.
+4. **Read the answer.** The tool renders the final answer and the exit code.
 5. **Audit the network** with `sandbox_logs` before trusting the result
    (section 10). `sealed` runs have nothing to audit.
-6. **Collect deliverables** from the reported `SANDBOX_OUT_ROOT/<run-id>/`.
+6. **Artifacts are the user's.** If the user asked for files, tell them the drop
+   path; never open or list it yourself.
 
 A minimal call:
 
 ```text
 sandbox_run(
-  prompt: "Create /workspace/out/hello.txt containing 'hello'. Then reply DONE.",
+  prompt: "Reply with exactly: DONE.",
   model: "opencode/deepseek-v4.1-flash-free",
   timeout: 300
 )
 ```
 
-Expected: answer `DONE`, exit `0`, one file in the artifacts dir.
+Expected: answer `DONE`, exit `0`.
 
 ## 6. Writing the execution brief
 
@@ -143,8 +149,9 @@ The sandbox agent is competent but blind. Give it everything it needs:
   redesign the solution or widen the scope.
 - **State the goal and the definition of done.** "Validate the file, write a
   report, do not execute it."
-- **Say where to write.** Anything not written under `/workspace/out/` is lost
-  when the container dies. Ask for exact filenames.
+- **Put the answer in the final message.** A report, JSON, table or summary
+  must be returned as text, not written to `/workspace/out`. Use that directory
+  only for files the user explicitly asked to collect, and name them.
 - **Mention inputs.** `copy_in` files arrive at `/workspace/<basename>`; refer to
   them by that path, never by a host path.
 - **Bound the work.** Time, scope, "do not install anything", "use only the
@@ -170,7 +177,7 @@ opencode-sb peek                 # newest running run, if you lost the id
 ```
 
 `peek` returns a small fixed block: state (`running` + last-activity, or
-`finished` + exit code), the last N messages, and the output files.
+`finished` + exit code) and the last N messages.
 
 Never pull a full transcript into your context. `opencode-sb watch <run-id>` and
 `tail result.json` are unbounded and **for the human only**.
@@ -237,23 +244,26 @@ opencode-sb status          # containers + active turn
 opencode-sb down            # destroy it (state is lost)
 ```
 
-The session's `/workspace`, history and DB live until `down`. Deliverables from a
-session land in `SANDBOX_OUT_ROOT/session/` (tasks use `<run-id>/`). `sessions`
-shows `(running)` when a turn is in flight and `(idle)` otherwise; `status`
-shows the active session id. Session turns use the container's background
-service, which is what makes `steer`/`interrupt` possible.
+The session's `/workspace`, history and DB live until `down`. If the user asked
+for files, they land in `SANDBOX_OUT_ROOT/session/` (tasks use `<run-id>/`); you
+do not read them. `sessions` shows `(running)` when a turn is in flight and
+`(idle)` otherwise; `status` shows the active session id. Session turns use the
+container's background service, which is what makes `steer`/`interrupt` possible.
 
-## 10. Finishing: audit, artifacts, exit codes
+## 10. Finishing: audit, answer, exit codes
 
 Every run writes these under `sandbox/runs/<run-id>/` (repo):
 
 | File | What it is |
 |---|---|
-| `result.json` | execution events (JSON stream); the **final answer** is in the last event |
-| `hostout` | path of the host output dir (`SANDBOX_OUT_ROOT/<run-id>`) |
+| `result.json` | execution events (JSON stream); the **final answer** is the last text event — the only result channel |
+| `hostout` | path of the user's artifact drop (`SANDBOX_OUT_ROOT/<run-id>`); never read it |
 | `exit` | exit code, written last when the run finishes |
 | `proxy.log` | every internet request (domain/URL); **absent in `sealed`** |
 | `stderr.log` | OpenCode logs from inside the sandbox |
+
+**The answer is the final text, not the drop.** `/workspace/out` belongs to the
+user: never read, list or parse it. `hostout` is only the path you may give them.
 
 Exit codes: `0` success, `124` **timeout (inconclusive — not a failure; raise
 the timeout or narrow the task)**, anything else a failure.
@@ -295,9 +305,10 @@ and retry.
 ## 13. Limits and gotchas
 
 - **Container-grade.** Shared kernel; no VM boundary. Do not feed it secrets.
-- **The output dir is real, read-write and untrusted.** The agent can write,
+- **The artifact drop is real, read-write and untrusted.** The agent can write,
   overwrite or delete anything under `SANDBOX_OUT_ROOT/<run-id>/`, with no quota.
-  The human sets the prefix; never point it at a project tree.
+  It is the user's escape hatch, not your channel: never read or list it. The
+  human sets the prefix; never point it at a project tree.
 - **No host persistence.** Each `task` starts from an empty `/workspace`. The
   session persists until `down`.
 - **No host devices.** No GPU, no host browser, no Docker socket. Use the
@@ -318,7 +329,7 @@ and retry.
 | `N sessions are running; choose one` | ambiguous steer target | `opencode-sb sessions`, then `--session ses_…` |
 | exit `124` | timeout | raise `--timeout` or narrow the task; result is inconclusive |
 | no `proxy.log` | `--sealed` run | expected; there is no network to audit |
-| artifacts dir empty | agent never wrote `/workspace/out` | repeat, naming exact output paths |
+| no answer in the final message | the brief asked for a file instead of an answer | restate: put the result in the reply, not in `/workspace/out` |
 | `provider.no-route` | free model retired/renamed | `opencode-sb models --check`, pick a listed ref |
 | `cannot connect to Docker daemon` | wrong `DOCKER_HOST` (e.g. from a sandboxed shell) | `export DOCKER_HOST=unix:///var/run/docker.sock` |
 | page renders blank | content needs JavaScript | ask the agent to use the `webpage` skill |
@@ -332,7 +343,7 @@ and retry.
 sandbox_run(
   prompt: "Read /workspace/inst.sh. Explain what it does, list every network
            endpoint and file it touches, and say whether it is safe. DO NOT
-           execute it. Write the report to /workspace/out/report.md.",
+           execute it. Put the report in your final message.",
   copy_in: ["./inst.sh"],
   model: "llama.cpp/qwen3.8-gguf-single192",
   sealed: true,
@@ -346,7 +357,7 @@ sandbox_run(
 opencode-sb task --model llama.cpp/qwen3.8-gguf-single192 --timeout 1200 \
   --copy-in ./sshd_config \
   --prompt "Install openssh-server if needed, put this at /etc/ssh/sshd_config,
-run 'sshd -t', list every error, then write /workspace/out/result.txt."
+run 'sshd -t', list every error, then put the result in your final message."
 ```
 
 **Read a JS-gated page:**
@@ -354,7 +365,7 @@ run 'sshd -t', list every error, then write /workspace/out/result.txt."
 ```text
 sandbox_run(
   prompt: "Use the webpage skill to open https://example.com/app, wait for the
-           table to render, and write its rows as JSON to /workspace/out/rows.json.",
+           table to render, and put the rows as JSON in your final message.",
   model: "opencode/deepseek-v4.1-flash-free"
 )
 ```
@@ -362,7 +373,7 @@ sandbox_run(
 **Start long work, then steer it:**
 
 ```bash
-id=$(opencode-sb task --detach --prompt "Run /workspace/check.sh (already copied in); write its full log to /workspace/out/check.log and exit with its status." --copy-in ./check.sh | awk '/^run /{print $2}')
+id=$(opencode-sb task --detach --prompt "Run /workspace/check.sh (already copied in); put its exit status and a short failure summary in your final message." --copy-in ./check.sh | awk '/^run /{print $2}')
 opencode-sb peek "$id"              # running? on track?
 opencode-sb steer --run "$id" "Use the offline mirror; do not hit the network."
 opencode-sb peek "$id"              # confirm the correction landed
@@ -375,6 +386,8 @@ opencode-sb peek "$id"              # confirm the correction landed
   output prefix.
 - Never assume `/workspace` or the session survives; `task` is fresh, `down`
   destroys.
+- Never read, list or parse `/workspace/out`, and never ask the sandbox to put
+  its answer there; it is the user's artifact drop, not a channel.
 - Never re-run the same work while a run is alive — **steer it**.
 - Never stream `watch` / `tail result.json` into your context — `peek`.
 - Never trust a result you have not audited (or deliberately sealed).
