@@ -89,6 +89,11 @@ link() { # link <origem> <destino>; tolera destino em filesystem read-only
   say "  link:   $dst -> $src"
 }
 
+ensure_toolbelt_plugin() {
+  mkdir -p "$CONFIG_DIR/plugins" 2>/dev/null || true
+  link "$ROOT/plugins/toolbelt" "$CONFIG_DIR/plugins/toolbelt" || true
+}
+
 unlink_ours() { # remove symlink apenas se apontar para dentro do repo
   local dst="$1"
   [ -L "$dst" ] || return 0
@@ -347,6 +352,11 @@ cmd_check() {
   for f in "$CONFIG_DIR/tools/notes.ts" "$CONFIG_DIR/tools/sandbox.ts"; do
     if [ -e "$f" ]; then say "  tool    : $f"; else say "  tool    : (ausente) $f"; failed=1; fi
   done
+  if [ -e "$CONFIG_DIR/plugins/toolbelt" ]; then
+    say "  plugin  : $CONFIG_DIR/plugins/toolbelt"
+  else
+    say "  plugin  : (ausente) $CONFIG_DIR/plugins/toolbelt"; failed=1
+  fi
   say "  banco   : $NEW_DB"
 
   if [ "$SANDBOX" = 1 ]; then
@@ -406,8 +416,10 @@ cmd_remove() {
   for name in opencode-sandboxed opencode-sb; do
     unlink_ours "$BIN_DIR/$name"
   done
+  unlink_ours "$CONFIG_DIR/plugins/toolbelt"
   say ""
   say "banco preservado em: $NEW_DB"
+  say "resumos/indice preservados em: \${XDG_DATA_HOME:-~/.local/share}/agent-toolbelt"
   say "sandbox: imagens/rede/guard ficam; para remover o guard (root):"
   say "  sudo $ROOT/sandbox/host-firewall.sh uninstall-unit"
   exit 0
@@ -431,16 +443,16 @@ cmd_setup() {
   say "bin:    $BIN_DIR"
   say "config: $CONFIG_DIR"
 
-  step "1/6 plugin (@opencode-ai/plugin)"
+  step "1/7 plugin (@opencode-ai/plugin)"
   ensure_plugin
 
-  step "2/6 memoria"
+  step "2/7 memoria"
   chmod +x "$ROOT/memory/notes.py" 2>/dev/null || true
   link "$ROOT/memory/notes.py" "$BIN_DIR/notes" || true
   cleanup_legacy_bin
   migrate_db
 
-  step "3/6 skills"
+  step "3/7 skills"
   local name
   cleanup_legacy_skill
   for d in "$ROOT"/skills/*/; do
@@ -449,16 +461,19 @@ cmd_setup() {
     link "${d%/}/SKILL.md" "$CONFIG_DIR/skills/$name/SKILL.md" || true
   done
 
-  step "4/6 tools"
+  step "4/7 tools"
   mkdir -p "$CONFIG_DIR/tools" 2>/dev/null || true
   for t in "$ROOT"/tools/*.ts; do
     [ -f "$t" ] || continue
     link "$t" "$CONFIG_DIR/tools/$(basename "$t")" || true
   done
 
+  step "5/7 plugin agent-toolbelt (resumos, busca, contexto)"
+  ensure_toolbelt_plugin
+
   local sandbox_failed=0
   if [ "$SANDBOX" = 1 ]; then
-    step "5/6 sandbox"
+    step "6/7 sandbox"
     warn_selinux_noise
     ensure_docker || sandbox_failed=1
     if [ "$sandbox_failed" = 0 ]; then
@@ -478,11 +493,11 @@ cmd_setup() {
     fi
     sandbox_down
   else
-    step "5/6 sandbox (pulado)"
+    step "6/7 sandbox (pulado)"
     say "  use ./setup.sh sem --no-sandbox para preparar o sandbox"
   fi
 
-  step "6/6 verificacao"
+  step "7/7 verificacao"
   NOTES_DB="$NEW_DB" "$ROOT/memory/notes.py" init
   NOTES_DB="$NEW_DB" "$ROOT/memory/notes.py" doctor || warn "doctor reportou problemas (ver acima)"
   if [ -e "$BIN_DIR/notes" ]; then

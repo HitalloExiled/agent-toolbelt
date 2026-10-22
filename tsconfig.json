@@ -4,12 +4,12 @@
     "lib": ["ESNext"],
     "module": "ESNext",
     "moduleResolution": "bundler",
-    "types": ["node"],
+    "types": ["node", "bun"],
     "strict": true,
     "noUncheckedIndexedAccess": true,
     "noEmit": true,
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true
   },
-  "include": ["tools/**/*.ts"]
+  "include": ["tools/**/*.ts", "plugins/**/*.ts"]
 }

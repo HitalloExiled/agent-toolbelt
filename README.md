@@ -3,16 +3,19 @@
 Tools e skills do agente, mais o **bootstrap de máquina** que os liga ao
 OpenCode.
 
-Dois subsistemas:
+Três subsistemas:
 
 - **`notes`** — memória de longa duração (SQLite + FTS5 opcional), exposta como
   CLI global `notes` e como as tools `notes_*`.
 - **`sandbox`** — delegação de trabalho com risco para um container Docker
   descartável, via as tools `sandbox_*` e o CLI `opencode-sb`.
+- **`agent-toolbelt` (plugin)** — captura resumos de compactação, injeta o
+  estado do repo e o handoff da sessão anterior, e permite busca cross-sessão
+  em resumos e conversas passadas. Veja [Plugin: agent-toolbelt](#plugin-agent-toolbelt).
 
-O conteúdo (`tools/`, `skills/`, `memory/`, `sandbox/`) é genérico; o acoplamento
-com o OpenCode vive só no `setup.sh`. Trocar de harness = reescrever o
-`setup.sh`.
+O conteúdo (`tools/`, `skills/`, `memory/`, `sandbox/`, `plugins/`) é genérico;
+o acoplamento com o OpenCode vive só no `setup.sh`. Trocar de harness =
+reescrever o `setup.sh`.
 
 ## Layout
 
@@ -27,6 +30,8 @@ agent-toolbelt/
 ├── tools/
 │   ├── notes.ts
 │   └── sandbox.ts
+├── plugins/
+│   └── toolbelt/        # plugin OpenCode V2: resumos, injeção de contexto, busca
 ├── sandbox/
 │   ├── setup.sh        # expõe opencode-sb/opencode-sandboxed no PATH
 │   ├── run.sh          # orquestrador (task/steer/watch/peek/status/up/down/…)
@@ -56,10 +61,11 @@ O que o `setup.sh` faz, em ordem:
 
 | Passo | Efeito |
 |---|---|
-| plugin | garante `@opencode-ai/plugin` resolvível a partir do repo (npm, ou symlink do config do OpenCode) |
+| plugin (`@opencode-ai/plugin`) | garante a dependência npm resolvível a partir do repo (npm, ou symlink do config do OpenCode) — usada pelas tools legadas `notes_*`/`sandbox_*` |
 | memória | symlink `~/.local/bin/notes` → `memory/notes.py`; migra o banco legado, se existir |
 | skills | symlink `skills/<id>/SKILL.md` → `~/.config/opencode/skills/<id>/SKILL.md` |
 | tools | symlink `tools/*.ts` → `~/.config/opencode/tools/` |
+| plugin `agent-toolbelt` | symlink `plugins/toolbelt/` → `~/.config/opencode/plugins/toolbelt` (resumos, injeção de contexto, busca) |
 | sandbox | daemon docker → CLI `opencode-sb` → guard de firewall → imagens/rede → self-test → tarefa de fumaça |
 | verificação | `notes init`, `notes doctor`, estado do sandbox, PATH |
 
@@ -126,10 +132,84 @@ Se quiser uma allow-list de skills no config do OpenCode:
 ]
 ```
 
+## Plugin: agent-toolbelt
+
+Plugin único (`plugins/toolbelt/`, id `agent-toolbelt`) para o OpenCode V2.
+Carregado automaticamente como pacote local em `~/.config/opencode/plugins/toolbelt`
+(link criado pelo `setup.sh`). Três funções:
+
+1. **Captura resumos de compactação.** Toda vez que uma sessão é compactada, o
+   corpo completo do resumo (Objective, Requirements, Decisions, Work State,
+   Next Move, Relevant Files, Important Context) é salvo como um arquivo
+   Markdown, um por compactação. Nenhuma transcript é guardada — só o resumo
+   que o próprio OpenCode já produziu.
+2. **Injeta contexto no início da sessão.** No primeiro turno de uma sessão
+   (e de novo se o projeto mudar), o plugin injeta um bloco
+   `<toolbelt-context>` com: o estado atual do repositório git (branch, último
+   commit, arquivos modificados/untracked) e o handoff da sessão anterior do
+   mesmo projeto (Objective/Next Move + corpo completo do último resumo). Isso
+   nunca é persistido — é recalculado a cada injeção.
+3. **Permite busca cross-sessão.** Um índice derivado (SQLite FTS5, com
+   fallback `LIKE` e, por último, JSON) guarda apenas texto de usuário, texto
+   de assistente e resumos — nunca reasoning, nunca chamadas de tool. O
+   backfill é preguiçoso e incremental: só acontece quando alguém busca, e só
+   processa sessões/mensagens novas desde a última vez.
+
+### Onde os dados ficam
+
+```
+$XDG_DATA_HOME/agent-toolbelt/
+├── compactions/<projectID>/<timestampUTC>-<messageID>.md   # resumos, um por compactação
+├── index.db          # índice FTS5 derivado (ou index.json sem SQLite)
+```
+
+`projectID` é o identificador de projeto do próprio OpenCode
+(`session.projectID`); sessões sem projeto caem em `global`. Nada é
+versionado no repo nem escrito dentro dele.
+
+### Tools (read-only, com escopo de projeto por padrão)
+
+| Tool | Para quê |
+|---|---|
+| `toolbelt_summaries` | listar/buscar/ler resumos de compactação (`detail=brief\|full\|sections`) + estado do repo (`action=repo`) |
+| `toolbelt_search` | buscar no índice derivado (resumos + texto de usuário/assistente); `scope=project\|all` |
+| `toolbelt_history` | inspecionar a timeline completa de uma sessão (listar sessões, ler página, buscar, buscar uma mensagem); tool calls e reasoning só entram com `includeTools`/`includeReasoning` explícitos |
+
+### Comandos
+
+`/summaries`, `/summary [id] [brief|full|sections]`, `/sessions`, `/index`
+(força reindex), `/repo` (mostra só o estado do git). Cada um é um atalho que
+chama as tools acima.
+
+### Variáveis de ambiente
+
+| Variável | Efeito | Default |
+|---|---|---|
+| `TOOLBELT_DATA_DIR` | raiz de dados do plugin (sobrepõe XDG) | `$XDG_DATA_HOME/agent-toolbelt` |
+| `TOOLBELT_SUMMARY_KEEP` | quantos resumos manter por projeto (os mais antigos são podados, do disco e do índice) | `20` |
+| `TOOLBELT_INJECT_MAX` | teto de bytes do bloco `<toolbelt-context>` injetado | `~6 KB` |
+| `TOOLBELT_INDEX_TEXT_MAX` | teto de caracteres de texto indexado por documento | — |
+| `TOOLBELT_BACKFILL_SESSIONS` | teto de sessões processadas por backfill | — |
+| `TOOLBELT_BACKFILL_MESSAGES` | teto de mensagens processadas por sessão no backfill | — |
+
+### Privacidade e remoção
+
+Tudo fica fora do repo, em `$XDG_DATA_HOME/agent-toolbelt/` (permissões
+`0700`/`0600`). `./setup.sh --remove` remove só o symlink do plugin — nunca
+apaga resumos nem o índice. Para apagar os dados de fato:
+
+```bash
+rm -rf "${XDG_DATA_HOME:-$HOME/.local/share}/agent-toolbelt"
+```
+
+Para desativar sem remover nada, apague o link
+`~/.config/opencode/plugins/toolbelt` (ou rode `./setup.sh --remove`) e
+reinicie o OpenCode.
+
 ## Desenvolvimento
 
 ```bash
-npm install        # devDeps: typescript, @types/node, @opencode-ai/plugin
+npm install        # devDeps: typescript, @types/node, @opencode-ai/plugin, @opencode/plugin, @opencode/client, @opencode/schema
 npm run typecheck
 ```
 
