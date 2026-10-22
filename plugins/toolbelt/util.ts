@@ -54,21 +54,46 @@ export function tokenize(text: string): string[] {
   return out;
 }
 
-/** First window around any of the query terms, useful for compact search results. */
-export function snippet(text: string, terms: string[], width = 260): string {
+/**
+ * Window(s) around the occurrences of any query term, useful for compact
+ * search results. Up to `maxWindows` non-overlapping windows, each `width`
+ * characters centered on a cluster of occurrences; clusters that overlap
+ * merge into one window. With no occurrence the beginning of the text is
+ * returned instead.
+ */
+export function snippet(text: string, terms: string[], width = 260, maxWindows = 1): string {
   const flat = normalizeWhitespace(text);
   if (!flat) return "";
   const lower = flat.toLocaleLowerCase();
-  let at = -1;
+  const positions: number[] = [];
   for (const term of terms) {
     if (!term) continue;
-    const found = lower.indexOf(term);
-    if (found >= 0 && (at < 0 || found < at)) at = found;
+    let from = 0;
+    for (;;) {
+      const at = lower.indexOf(term, from);
+      if (at < 0) break;
+      positions.push(at);
+      from = at + Math.max(1, term.length);
+    }
   }
-  if (at < 0) return clip(flat, width);
-  const start = Math.max(0, at - Math.floor(width / 3));
-  const end = Math.min(flat.length, start + width);
-  return `${start > 0 ? "…" : ""}${flat.slice(start, end)}${end < flat.length ? "…" : ""}`;
+  if (positions.length === 0) return clip(flat, width);
+  positions.sort((a, b) => a - b);
+  const half = Math.floor(width / 2);
+  const windows: Array<[number, number]> = [];
+  for (const at of positions) {
+    const start = Math.max(0, at - half);
+    const end = Math.min(flat.length, start + width);
+    const last = windows[windows.length - 1];
+    if (last && start <= last[1]) {
+      last[1] = Math.max(last[1], end);
+    } else {
+      windows.push([start, end]);
+      if (windows.length >= maxWindows) break;
+    }
+  }
+  return windows
+    .map(([s, e]) => `${s > 0 ? "…" : ""}${flat.slice(s, e)}${e < flat.length ? "…" : ""}`)
+    .join("  …  ");
 }
 
 export function modelLabel(model: unknown): string | undefined {

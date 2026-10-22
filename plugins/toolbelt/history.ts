@@ -399,14 +399,30 @@ export interface HistorySearchHit {
   score: number;
 }
 
+export interface SearchSessionOptions extends ExtractOptions {
+  maxMessages?: number;
+  limit?: number;
+  /** Width in characters of the window around each occurrence cluster. */
+  context?: number;
+  /** Max windows per message, one per occurrence cluster. */
+  windows?: number;
+}
+
+/**
+ * Search a session's timeline. Hits carry only a window around the
+ * occurrences (never the full message): `context` controls the window width
+ * and `windows` how many clusters of occurrences are shown per message.
+ */
 export async function searchSession(
   ctx: PluginContext,
   sessionID: string,
   query: string,
-  options: ExtractOptions & { maxMessages?: number; limit?: number },
+  options: SearchSessionOptions,
 ): Promise<{ hits: HistorySearchHit[]; partial: boolean; source: HistorySource }> {
   const terms = tokenize(query);
   if (terms.length === 0) return { hits: [], partial: false, source: "session" };
+  const context = Math.max(80, Math.min(4000, options.context ?? 260));
+  const windows = Math.max(1, Math.min(10, options.windows ?? 3));
   const listed = await listAllMessages(ctx, sessionID, { max: options.maxMessages ?? 4000 });
   const hits: HistorySearchHit[] = [];
   for (const message of listed.messages) {
@@ -423,7 +439,7 @@ export async function searchSession(
         from = at + term.length;
       }
     }
-    if (score > 0) hits.push({ message, score, snippet: snippet(text, terms) });
+    if (score > 0) hits.push({ message, score, snippet: snippet(text, terms, context, windows) });
   }
   hits.sort((a, b) => b.score - a.score || messageCreated(a.message) - messageCreated(b.message));
   return {

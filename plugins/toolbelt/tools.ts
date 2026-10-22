@@ -240,6 +240,7 @@ export async function registerTools(ctx: PluginContext, runtime: Runtime) {
       name: "toolbelt_history",
       description: [
         "Inspect the full message timeline of a session: list sessions, read a page, search inside it, or fetch one message.",
+        "action=search returns only a window around the occurrences (context=window width, windows=clusters per message), never the full message — prefer it over action=read to inspect a long conversation.",
         "Tool calls and reasoning are excluded unless includeTools/includeReasoning is set.",
       ].join(" "),
       input: {
@@ -258,6 +259,14 @@ export async function registerTools(ctx: PluginContext, runtime: Runtime) {
           order: { type: "string", enum: ["asc", "desc"], description: "Page direction for action=read. Defaults to desc." },
           includeTools: { type: "boolean", description: "Include tool calls and results. Off by default." },
           includeReasoning: { type: "boolean", description: "Include reasoning blocks. Off by default." },
+          context: {
+            type: "number",
+            description: "Window width in characters around each occurrence cluster (action=search). 80-4000, defaults to 260.",
+          },
+          windows: {
+            type: "number",
+            description: "Maximum windows per message, one per occurrence cluster (action=search). 1-10, defaults to 3.",
+          },
           scope: { type: "string", enum: ["project", "all"], description: "Session listing scope. Defaults to project." },
         },
         additionalProperties: false,
@@ -313,6 +322,8 @@ export async function registerTools(ctx: PluginContext, runtime: Runtime) {
             includeTools,
             includeReasoning,
             limit: num(input, "limit", 20, 1, 100),
+            context: num(input, "context", 260, 80, 4000),
+            windows: num(input, "windows", 3, 1, 10),
           });
           return {
             content:
