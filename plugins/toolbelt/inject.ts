@@ -14,6 +14,7 @@ import type { MessageLike, SessionInfoLike } from "./types.js";
 import { injectMax } from "./paths.js";
 import { repoSnapshot } from "./repo.js";
 import { captureCompaction, findSection, listSummaries, toIndexDoc } from "./summaries.js";
+import { resolveProjectID } from "./projects.js";
 import { clip, fmtDate } from "./util.js";
 import { getSessionInfo } from "./history.js";
 
@@ -30,6 +31,7 @@ export async function captureLatestCompaction(
   runtime: Runtime,
   sessionID: string,
   info: SessionInfoLike,
+  projectID: string,
   force = false,
 ): Promise<void> {
   const state = sessionRuntime(runtime, sessionID);
@@ -43,7 +45,7 @@ export async function captureLatestCompaction(
       .find((message) => message.type === "compaction" && message.status === "completed" && (message.summary ?? "").trim());
     if (!compaction?.id) return;
     if (state.lastCompactionID === compaction.id) return;
-    const captured = await captureCompaction(info.projectID, info, compaction);
+    const captured = await captureCompaction(projectID, info, compaction);
     if (!captured) return;
     state.lastCompactionID = compaction.id;
     await runtime.index.upsert([toIndexDoc(captured.record)]).catch((error) => {
@@ -98,21 +100,24 @@ export async function onContext(
     return;
   }
 
+  // Sessions inside a real project's directory can carry the root project
+  // id "global"; resolve them so captures and handoffs land in the right bucket.
+  const projectID = (await resolveProjectID(info)) || info.projectID;
   const state = sessionRuntime(runtime, event.sessionID);
-  if (state.projectID !== info.projectID) {
-    state.projectID = info.projectID;
+  if (state.projectID !== projectID) {
+    state.projectID = projectID;
     state.injected = false;
     state.captured = false;
     state.lastCompactionID = undefined;
   }
 
-  await captureLatestCompaction(ctx, runtime, event.sessionID, info);
+  await captureLatestCompaction(ctx, runtime, event.sessionID, info, projectID);
   if (state.injected) return;
 
   try {
     const [repo, summaries] = await Promise.all([
       repoSnapshot(info.location?.directory),
-      listSummaries(info.projectID, 20).catch(() => []),
+      listSummaries(projectID, 20).catch(() => []),
     ]);
     // Do not re-inject the current session's own compaction: it is already in
     // the active context. Prefer the most recent summary from another session.

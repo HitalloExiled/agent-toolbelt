@@ -42,7 +42,7 @@ const COMMANDS: Definition[] = [
     prompt: (args) =>
       [
         'Call toolbelt_history with action="sessions" for the current project.',
-        args ? `Use query="${args.replace(/"/g, '\\"')}" to filter by title.` : "",
+        args ? `Use query="${args.replace(/"/g, '\\"')}" to filter by title or project path.` : "",
         "Present id, date and title so I can pick one.",
       ]
         .filter(Boolean)

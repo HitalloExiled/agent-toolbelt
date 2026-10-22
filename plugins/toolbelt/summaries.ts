@@ -79,6 +79,8 @@ export async function captureCompaction(
   const messageID = message.id;
   const existing = await findSummaryByMessageID(projectID, messageID);
   if (existing) return { record: existing, fresh: false, pruned: [] };
+  // A session re-homed from the root project may leave a stale copy there.
+  await removeStaleGlobalSummary(projectID, messageID);
 
   const created = timeMs(message.time?.created) || Date.now();
   const path = summaryPath(projectID, created, messageID);
@@ -125,6 +127,15 @@ export async function findSummaryByMessageID(projectID: string, messageID: strin
     return summaryFromPath(path, projectID);
   }
   return undefined;
+}
+
+async function removeStaleGlobalSummary(projectID: string, messageID: string): Promise<void> {
+  if (projectID === "global") return;
+  const suffix = `-${safeFilename(messageID)}.md`;
+  for (const path of await listMarkdown(projectDir("global"))) {
+    if (!path.endsWith(suffix)) continue;
+    await rm(path, { force: true }).catch(() => undefined);
+  }
 }
 
 export async function listSummaries(projectID: string, limit = 20): Promise<SummaryRecord[]> {

@@ -4,6 +4,7 @@ import type { Runtime } from "./runtime.js";
 import { backfillMessageLimit, backfillSessionLimit } from "./paths.js";
 import { captureCompaction, listAllSummaries, listSummaries, pruneSummaries, toIndexDoc } from "./summaries.js";
 import { extractNarrative, listAllMessages, listSessions, messageCreated } from "./history.js";
+import { resolveProjectID } from "./projects.js";
 import type { IndexDoc, MessageLike, SessionInfoLike } from "./types.js";
 import { timeMs } from "./util.js";
 
@@ -31,16 +32,12 @@ function sessionUpdated(session: SessionInfoLike): number {
   return timeMs(session.time?.updated) || timeMs(session.time?.created) || 0;
 }
 
-function narrativeDoc(
-  message: MessageLike,
-  session: SessionInfoLike,
-  fallbackProjectID: string,
-): IndexDoc | undefined {
+function narrativeDoc(message: MessageLike, session: SessionInfoLike, projectID: string): IndexDoc | undefined {
   const narrative = extractNarrative(message);
   if (!narrative) return undefined;
   return {
     id: message.id,
-    projectID: session.projectID || fallbackProjectID,
+    projectID,
     sessionID: session.id,
     messageID: message.id,
     kind: narrative.kind,
@@ -74,7 +71,9 @@ async function doBackfill(runtime: Runtime, projectID: string): Promise<Backfill
   for (const session of sessions.slice(0, backfillSessionLimit())) {
     const updatedAt = sessionUpdated(session);
     const stored = index.getSession(session.id);
-    const effectiveProject = session.projectID || projectID;
+    // Sessions inside a real project's directory can carry the root project
+    // id "global"; index them under the project their directory belongs to.
+    const effectiveProject = (await resolveProjectID(session)) || projectID;
     if (stored && stored.projectID === effectiveProject && stored.updatedAt >= updatedAt && updatedAt > 0) continue;
 
     let listed;
@@ -102,7 +101,7 @@ async function doBackfill(runtime: Runtime, projectID: string): Promise<Backfill
         }
         continue;
       }
-      const doc = narrativeDoc(message, session, projectID);
+      const doc = narrativeDoc(message, session, effectiveProject);
       if (doc) docs.push(doc);
     }
 

@@ -11,6 +11,7 @@
 import type { PluginContext } from "./context.js";
 import type { ContentPart, MessageLike, SessionInfoLike } from "./types.js";
 import { discoverService, serviceGet } from "./service.js";
+import { listProjects, resolveProjectID, sessionHaystack } from "./projects.js";
 import { clip, fmtDate, modelLabel, normalizeWhitespace, shortID, snippet, timeMs, tokenize } from "./util.js";
 
 export type HistorySource = "session" | "service" | "context";
@@ -122,17 +123,71 @@ export async function getSessionInfo(ctx: PluginContext, sessionID: string): Pro
   return (await ctx.session.get({ sessionID } as never)) as unknown as SessionInfoLike;
 }
 
-export async function listSessions(
-  ctx: PluginContext,
-  options: { projectID?: string; scope: "project" | "all"; limit?: number; query?: string; directory?: string },
-): Promise<SessionInfoLike[]> {
-  const page = await ctx.session.list({
-    ...(options.scope === "project" && options.projectID ? { project: options.projectID } : {}),
+export interface ListSessionsOptions {
+  projectID?: string;
+  scope: "project" | "all";
+  limit?: number;
+  query?: string;
+  directory?: string;
+}
+
+/**
+ * List sessions. The server-side `search` only matches session titles, so the
+ * query is applied client-side against the title, the session directory and
+ * the project's canonical path/name. Sessions that OpenCode left at the root
+ * project `global` while their directory belongs to a real project are
+ * re-homed client-side, so they show up in that project's listing.
+ */
+export async function listSessions(ctx: PluginContext, options: ListSessionsOptions): Promise<SessionInfoLike[]> {
+  const pageSize = Math.max(1, Math.min(100, options.limit ?? 20));
+  const extra: Record<string, unknown> = {
     ...(options.directory ? { directory: options.directory } : {}),
-    ...(options.query ? { search: options.query } : {}),
-    limit: Math.max(1, Math.min(100, options.limit ?? 20)),
-  } as never);
-  return (page.data ?? []) as unknown as SessionInfoLike[];
+    limit: 100,
+  };
+
+  const requests: Array<Promise<unknown>> = [];
+  if (options.scope === "project" && options.projectID) {
+    requests.push(ctx.session.list({ project: options.projectID, ...extra } as never));
+    if (options.projectID !== "global") {
+      // Pull in root-project sessions too; the project filter below re-homes
+      // the ones that physically belong to this project.
+      requests.push(ctx.session.list({ project: "global", ...extra } as never));
+    }
+  } else {
+    requests.push(ctx.session.list(extra as never));
+  }
+
+  const seen = new Set<string>();
+  let sessions: SessionInfoLike[] = [];
+  for (const page of await Promise.all(requests)) {
+    const data = (page as { data?: unknown[] } | undefined)?.data ?? [];
+    for (const session of data as unknown as SessionInfoLike[]) {
+      if (!session?.id || seen.has(session.id)) continue;
+      seen.add(session.id);
+      sessions.push(session);
+    }
+  }
+
+  if (options.scope === "project" && options.projectID) {
+    const resolved = await Promise.all(sessions.map((session) => resolveProjectID(session)));
+    const kept: SessionInfoLike[] = [];
+    sessions.forEach((session, i) => {
+      if (resolved[i] === options.projectID) kept.push(session);
+    });
+    sessions = kept;
+  }
+
+  const query = options.query?.trim();
+  if (query) {
+    const terms = tokenize(query);
+    if (terms.length > 0) {
+      const projects = await listProjects();
+      sessions = sessions.filter((session) =>
+        terms.every((term) => sessionHaystack(session, projects).includes(term)),
+      );
+    }
+  }
+  return sessions.slice(0, pageSize);
 }
 
 export interface ListedMessages {

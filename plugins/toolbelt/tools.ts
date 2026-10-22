@@ -4,6 +4,7 @@ import type { PluginContext } from "./context.js";
 import type { Runtime } from "./runtime.js";
 import type { MessageKind } from "./types.js";
 import { backfillProject, reindexProject, indexSummaryFiles } from "./indexer.js";
+import { resolveProjectID } from "./projects.js";
 import { repoSnapshot } from "./repo.js";
 import {
   findSummary,
@@ -57,7 +58,10 @@ function record(input: unknown): Record<string, unknown> {
 
 async function currentProject(ctx: PluginContext, sessionID: string) {
   const info = await getSessionInfo(ctx, sessionID);
-  return { info, projectID: info.projectID, directory: info.location?.directory };
+  // Sessions inside a real project's directory can carry the root project
+  // id "global"; resolve them to the project their directory belongs to.
+  const projectID = (await resolveProjectID(info)) || info.projectID;
+  return { info, projectID, directory: info.location?.directory };
 }
 
 export async function registerTools(ctx: PluginContext, runtime: Runtime) {
@@ -243,7 +247,11 @@ export async function registerTools(ctx: PluginContext, runtime: Runtime) {
         properties: {
           action: { type: "string", enum: ["sessions", "read", "search", "message"], description: "Defaults to sessions." },
           sessionID: { type: "string", description: "Target session. Defaults to the current session." },
-          query: { type: "string", description: "Words to look for (action=search) or title filter (action=sessions)." },
+          query: {
+            type: "string",
+            description:
+              "Words to look for (action=search). For action=sessions it filters by title, session directory or project path/name.",
+          },
           messageID: { type: "string", description: "Message to fetch for action=message." },
           limit: { type: "number", description: "Maximum items (1-100; 40 for read, 20 otherwise)." },
           cursor: { type: "string", description: "Pagination cursor returned by a previous read." },
