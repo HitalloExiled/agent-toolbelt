@@ -1,10 +1,12 @@
 /** Lazy, incremental backfill of the derived narrative index. */
 
+import { readdir } from "node:fs/promises";
+
 import type { Runtime } from "./runtime.js";
-import { backfillMessageLimit, backfillSessionLimit } from "./paths.js";
+import { backfillMessageLimit, backfillSessionLimit, compactionsRoot } from "./paths.js";
 import { captureCompaction, listAllSummaries, listSummaries, pruneSummaries, toIndexDoc } from "./summaries.js";
 import { extractNarrative, listAllMessages, listSessions, messageCreated } from "./history.js";
-import { resolveProjectID } from "./projects.js";
+import { listProjects, resolveProjectID } from "./projects.js";
 import type { IndexDoc, MessageLike, SessionInfoLike } from "./types.js";
 import { timeMs } from "./util.js";
 
@@ -14,15 +16,22 @@ export interface BackfillResult {
   partial: boolean;
 }
 
+/**
+ * Index the summary files that are on disk. This is a read path: it never
+ * prunes files (pruning happens only on the write path, in captureCompaction),
+ * but it does remove index entries whose file is gone, so a manual deletion
+ * stays visible in the index.
+ */
 export async function indexSummaryFiles(runtime: Runtime, projectID?: string): Promise<number> {
-  if (projectID) {
-    // Keep the index aligned with what is actually on disk.
-    const pruned = await pruneSummaries(projectID);
-    if (pruned.length > 0) {
-      await runtime.index.remove(pruned.map((id) => `summary:${id}`)).catch(() => undefined);
-    }
-  }
   const records = projectID ? await listSummaries(projectID, 1000) : await listAllSummaries(1000);
+  const onDisk = new Set(records.map((record) => record.messageID));
+  try {
+    const indexed = await runtime.index.summaryIDs(projectID);
+    const stale = indexed.filter((docID) => docID.startsWith("summary:") && !onDisk.has(docID.slice("summary:".length)));
+    if (stale.length > 0) await runtime.index.remove(stale);
+  } catch (error) {
+    console.error(`[toolbelt] summary index reconciliation failed: ${error instanceof Error ? error.message : error}`);
+  }
   if (records.length === 0) return 0;
   await runtime.index.upsert(records.map(toIndexDoc));
   return records.length;
@@ -146,4 +155,76 @@ export async function reindexProject(runtime: Runtime, projectID: string): Promi
 
 export async function indexAllSummaries(runtime: Runtime): Promise<number> {
   return indexSummaryFiles(runtime);
+}
+
+export interface IndexAllProject {
+  projectID: string;
+  sessions: number;
+  messages: number;
+  partial: boolean;
+}
+
+export interface IndexAllResult {
+  projects: IndexAllProject[];
+  summaries: number;
+  totals: { projects: number; sessions: number; messages: number };
+}
+
+/** Project bucket names that already exist on disk (summaries outlive sessions). */
+async function projectDirsOnDisk(): Promise<string[]> {
+  let entries;
+  try {
+    entries = await readdir(compactionsRoot(), { withFileTypes: true });
+  } catch {
+    return [];
+  }
+  return entries
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => entry.name);
+}
+
+/**
+ * Manually index every known project: the projects the service reports, the
+ * projects that already have summary files on disk, and the current one.
+ * Incremental by default (already-indexed sessions are skipped); `rebuild`
+ * clears the index first. This is the manual counterpart of the lazy
+ * per-project backfill that `scope=all` relies on.
+ */
+export async function indexAllProjects(
+  runtime: Runtime,
+  options: { currentProjectID?: string; rebuild?: boolean; concurrency?: number } = {},
+): Promise<IndexAllResult> {
+  const ids = new Set<string>();
+  for (const project of await listProjects()) ids.add(project.id);
+  for (const name of await projectDirsOnDisk()) ids.add(name);
+  if (options.currentProjectID) ids.add(options.currentProjectID);
+
+  if (options.rebuild) {
+    for (const id of ids) await runtime.index.clearProject(id).catch(() => undefined);
+  }
+
+  const projects: IndexAllProject[] = [];
+  const queue = [...ids];
+  // Single-threaded event loop: queue.shift() between awaits is race-free.
+  const worker = async () => {
+    for (;;) {
+      const projectID = queue.shift();
+      if (projectID === undefined) break;
+      const result = await backfillProject(runtime, projectID);
+      projects.push({ projectID, sessions: result.sessions, messages: result.messages, partial: result.partial });
+    }
+  };
+  const concurrency = Math.max(1, Math.min(8, options.concurrency ?? 3));
+  await Promise.all(Array.from({ length: Math.min(concurrency, queue.length) }, () => worker()));
+
+  const summaries = await indexSummaryFiles(runtime).catch(() => 0);
+  return {
+    projects,
+    summaries,
+    totals: {
+      projects: projects.length,
+      sessions: projects.reduce((sum, project) => sum + project.sessions, 0),
+      messages: projects.reduce((sum, project) => sum + project.messages, 0),
+    },
+  };
 }

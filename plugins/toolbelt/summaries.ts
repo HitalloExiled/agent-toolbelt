@@ -1,6 +1,6 @@
 /** Durable compaction summaries (Markdown files, one per compaction). */
 
-import { rm, stat } from "node:fs/promises";
+import { readdir, rm, stat } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { compactionsRoot, projectDir, summaryKeep } from "./paths.js";
 import type { IndexDoc, MessageLike, SessionInfoLike, SummaryRecord } from "./types.js";
@@ -79,8 +79,8 @@ export async function captureCompaction(
   const messageID = message.id;
   const existing = await findSummaryByMessageID(projectID, messageID);
   if (existing) return { record: existing, fresh: false, pruned: [] };
-  // A session re-homed from the root project may leave a stale copy there.
-  await removeStaleGlobalSummary(projectID, messageID);
+  // A session re-homed from another project bucket may leave a stale copy there.
+  await removeStaleSummaries(projectID, messageID);
 
   const created = timeMs(message.time?.created) || Date.now();
   const path = summaryPath(projectID, created, messageID);
@@ -129,12 +129,28 @@ export async function findSummaryByMessageID(projectID: string, messageID: strin
   return undefined;
 }
 
-async function removeStaleGlobalSummary(projectID: string, messageID: string): Promise<void> {
-  if (projectID === "global") return;
+/**
+ * Delete stale copies of the same compaction that live in other project
+ * buckets (for example after a session was re-homed from `global` or from
+ * another project). Only called from the write path.
+ */
+async function removeStaleSummaries(projectID: string, messageID: string): Promise<void> {
   const suffix = `-${safeFilename(messageID)}.md`;
-  for (const path of await listMarkdown(projectDir("global"))) {
-    if (!path.endsWith(suffix)) continue;
-    await rm(path, { force: true }).catch(() => undefined);
+  let entries;
+  try {
+    entries = await readdir(compactionsRoot(), { withFileTypes: true });
+  } catch {
+    return;
+  }
+  const target = projectDir(projectID);
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const dir = join(compactionsRoot(), entry.name);
+    if (dir === target) continue;
+    for (const path of await listMarkdown(dir)) {
+      if (!path.endsWith(suffix)) continue;
+      await rm(path, { force: true }).catch(() => undefined);
+    }
   }
 }
 
@@ -174,14 +190,18 @@ export async function findSummary(projectID: string, id = "latest"): Promise<Sum
   const wanted = id.trim().replace(/^summary:/, "");
   if (!wanted || wanted === "latest") return (await listSummaries(projectID, 1))[0];
   const records = await listSummaries(projectID, 1000);
-  return records.find(
+  // Exact matches (id, message id, file name) always win.
+  const exact = records.find(
     (record) =>
       record.id === wanted ||
       record.messageID === wanted ||
       basename(record.path) === wanted ||
-      basename(record.path, ".md") === wanted ||
-      record.messageID.startsWith(wanted),
+      basename(record.path, ".md") === wanted,
   );
+  if (exact) return exact;
+  // Prefix matching is a convenience, not a contract: a short prefix could
+  // grab the wrong summary, so require a meaningful one.
+  return wanted.length >= 8 ? records.find((record) => record.messageID.startsWith(wanted)) : undefined;
 }
 
 export async function searchSummaries(

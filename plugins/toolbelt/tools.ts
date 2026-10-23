@@ -3,7 +3,7 @@
 import type { PluginContext } from "./context.js";
 import type { Runtime } from "./runtime.js";
 import type { MessageKind } from "./types.js";
-import { backfillProject, reindexProject, indexSummaryFiles } from "./indexer.js";
+import { backfillProject, indexAllProjects, reindexProject, indexSummaryFiles } from "./indexer.js";
 import { resolveProjectID } from "./projects.js";
 import { repoSnapshot } from "./repo.js";
 import {
@@ -28,6 +28,7 @@ import {
   readPage,
   searchSession,
 } from "./history.js";
+import type { HistoryPage, HistorySearchHit, HistorySource } from "./history.js";
 import { fmtDate, normalizeWhitespace } from "./util.js";
 
 function str(input: Record<string, unknown>, key: string): string | undefined {
@@ -71,20 +72,34 @@ export async function registerTools(ctx: PluginContext, runtime: Runtime) {
       description: [
         "Search past conversations and compaction summaries across sessions of this project.",
         "The index holds only user text, assistant text and compaction summaries (never reasoning or tool payloads).",
-        "Actions: search (default), stats, reindex.",
+        "Actions: search (default), stats, reindex, index-all.",
+        "scope=all searches what is already indexed plus every summary on disk; run action=index-all first to index all projects.",
       ].join(" "),
       input: {
         type: "object",
         properties: {
-          action: { type: "string", enum: ["search", "stats", "reindex"], description: "Defaults to search." },
+          action: {
+            type: "string",
+            enum: ["search", "stats", "reindex", "index-all"],
+            description: "Defaults to search. index-all manually indexes every known project.",
+          },
           query: { type: "string", description: "Words to look for. Required for action=search." },
-          scope: { type: "string", enum: ["project", "all"], description: "Defaults to the current project." },
+          scope: {
+            type: "string",
+            enum: ["project", "all"],
+            description:
+              "Defaults to the current project. scope=all searches everything already indexed plus every summary on disk.",
+          },
           kind: {
             type: "string",
             enum: ["any", "summary", "user", "assistant"],
             description: "Filter by document kind. Defaults to any.",
           },
           limit: { type: "number", description: "Maximum hits (1-50, default 20)." },
+          rebuild: {
+            type: "boolean",
+            description: "For action=index-all: clear the index first (full rebuild instead of incremental).",
+          },
         },
         additionalProperties: false,
       },
@@ -118,8 +133,25 @@ export async function registerTools(ctx: PluginContext, runtime: Runtime) {
           };
         }
 
+        if (action === "index-all") {
+          const rebuild = bool(input, "rebuild", false);
+          const result = await indexAllProjects(runtime, { currentProjectID: projectID, rebuild });
+          const lines = result.projects.map(
+            (project) =>
+              `- \`${project.projectID}\`: ${project.sessions} session(s), ${project.messages} document(s)${
+                project.partial ? " (partial)" : ""
+              }`,
+          );
+          return {
+            content:
+              `Indexed ${result.totals.projects} project(s): ${result.totals.sessions} sessions, ${result.totals.messages} documents` +
+              (rebuild ? " (full rebuild)" : " (incremental)") +
+              `; ${result.summaries} summary file(s) on disk.\n\n${lines.join("\n")}`,
+          };
+        }
+
         const query = str(input, "query");
-        if (!query) return { content: "Provide `query` (or use action=stats / action=reindex)." };
+        if (!query) return { content: "Provide `query` (or use action=stats / action=reindex / action=index-all)." };
 
         const scope = str(input, "scope") === "all" ? "all" : "project";
         const kind = (str(input, "kind") ?? "any") as MessageKind | "any";
@@ -267,7 +299,13 @@ export async function registerTools(ctx: PluginContext, runtime: Runtime) {
             type: "number",
             description: "Maximum windows per message, one per occurrence cluster (action=search). 1-10, defaults to 3.",
           },
-          scope: { type: "string", enum: ["project", "all"], description: "Session listing scope. Defaults to project." },
+          scope: {
+            type: "string",
+            enum: ["project", "all"],
+            description:
+              "Scope for sessions (listing) and for read/search/message (target session). Defaults to project. " +
+              "Pass scope=all to read or search sessions that belong to another project.",
+          },
         },
         additionalProperties: false,
       },
@@ -278,6 +316,25 @@ export async function registerTools(ctx: PluginContext, runtime: Runtime) {
         const includeTools = bool(input, "includeTools", false);
         const includeReasoning = bool(input, "includeReasoning", false);
         const { projectID } = await currentProject(ctx, context.sessionID);
+
+        // Session-targeted actions are project-scoped by default; a session
+        // that belongs to another project needs scope="all".
+        if ((action === "read" || action === "search" || action === "message") && sessionID !== context.sessionID) {
+          const scope = str(input, "scope") === "all" ? "all" : "project";
+          if (scope === "project") {
+            const targetInfo = await getSessionInfo(ctx, sessionID).catch(() => undefined);
+            const targetProject = targetInfo
+              ? ((await resolveProjectID(targetInfo).catch(() => undefined)) || targetInfo.projectID)
+              : undefined;
+            if (targetProject && targetProject !== projectID) {
+              return {
+                content:
+                  `Session \`${sessionID}\` belongs to a different project (\`${targetProject}\`). ` +
+                  'Pass scope="all" to read or search sessions across projects.',
+              };
+            }
+          }
+        }
 
         if (action === "sessions") {
           const scope = str(input, "scope") === "all" ? "all" : "project";
@@ -295,11 +352,21 @@ export async function registerTools(ctx: PluginContext, runtime: Runtime) {
         if (action === "read") {
           const limit = num(input, "limit", 40, 1, 100);
           const order = str(input, "order") === "asc" ? "asc" : "desc";
-          const { page, partial, source } = await readPage(ctx, sessionID, {
-            limit,
-            order,
-            cursor: str(input, "cursor"),
-          });
+          let read: { page: HistoryPage; partial: boolean; source: HistorySource };
+          try {
+            read = await readPage(ctx, sessionID, {
+              limit,
+              order,
+              cursor: str(input, "cursor"),
+            });
+          } catch (error) {
+            return {
+              content:
+                `Could not read session \`${sessionID}\`: ${error instanceof Error ? error.message : String(error)}. ` +
+                'Check the id with action="sessions".',
+            };
+          }
+          const { page, partial, source } = read;
           const messages = order === "desc" ? [...page.data].reverse() : page.data;
           const body = formatTimeline(messages, { includeTools, includeReasoning });
           const next = page.cursor?.next;
@@ -318,13 +385,22 @@ export async function registerTools(ctx: PluginContext, runtime: Runtime) {
         if (action === "search") {
           const query = str(input, "query");
           if (!query) return { content: "Provide `query` for action=search." };
-          const result = await searchSession(ctx, sessionID, query, {
-            includeTools,
-            includeReasoning,
-            limit: num(input, "limit", 20, 1, 100),
-            context: num(input, "context", 260, 80, 4000),
-            windows: num(input, "windows", 3, 1, 10),
-          });
+          let result: { hits: HistorySearchHit[]; partial: boolean; source: HistorySource };
+          try {
+            result = await searchSession(ctx, sessionID, query, {
+              includeTools,
+              includeReasoning,
+              limit: num(input, "limit", 20, 1, 100),
+              context: num(input, "context", 260, 80, 4000),
+              windows: num(input, "windows", 3, 1, 10),
+            });
+          } catch (error) {
+            return {
+              content:
+                `Could not search session \`${sessionID}\`: ${error instanceof Error ? error.message : String(error)}. ` +
+                'Check the id with action="sessions".',
+            };
+          }
           return {
             content:
               `Matches for "${query}" in \`${sessionID}\`:\n\n${formatHistorySearch(result, sessionID)}` +

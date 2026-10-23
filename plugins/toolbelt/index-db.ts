@@ -23,6 +23,8 @@ export interface ToolbeltIndex {
   readonly error?: string;
   upsert(docs: IndexDoc[]): Promise<void>;
   search(query: string, options: SearchOptions): Promise<SearchHit[]>;
+  /** Doc ids (kind="summary") currently in the index, for read-only reconciliation. */
+  summaryIDs(projectID?: string): Promise<string[]>;
   getSession(sessionID: string): IndexState | undefined;
   setSession(sessionID: string, projectID: string, updatedAt: number): void;
   count(projectID?: string): Promise<number>;
@@ -189,6 +191,15 @@ class SqliteIndex implements ToolbeltIndex {
     }
   }
 
+  async summaryIDs(projectID?: string): Promise<string[]> {
+    const rows = projectID
+      ? (this.db
+          .query("SELECT id FROM documents WHERE kind = 'summary' AND project_id = ?")
+          .all(projectID) as Array<{ id: string }>)
+      : (this.db.query("SELECT id FROM documents WHERE kind = 'summary'").all() as Array<{ id: string }>);
+    return rows.map((row) => row.id);
+  }
+
   getSession(sessionID: string): IndexState | undefined {
     const row = this.db.query("SELECT project_id, updated_at FROM sessions_indexed WHERE session_id = ?").get(sessionID) as
       | { project_id: string; updated_at: number }
@@ -261,7 +272,7 @@ interface JsonState {
   sessions: Record<string, IndexState>;
 }
 
-class JsonIndex implements ToolbeltIndex {
+export class JsonIndex implements ToolbeltIndex {
   readonly backend = "json" as const;
   error: string;
   private readonly path: string;
@@ -327,6 +338,16 @@ class JsonIndex implements ToolbeltIndex {
     }
     hits.sort((a, b) => b.rank - a.rank || b.created - a.created);
     return hits.slice(0, Math.max(1, options.limit));
+  }
+
+  async summaryIDs(projectID?: string): Promise<string[]> {
+    const out: string[] = [];
+    for (const [id, doc] of this.docs) {
+      if (doc.kind !== "summary") continue;
+      if (projectID && doc.projectID !== projectID) continue;
+      out.push(id);
+    }
+    return out;
   }
 
   getSession(sessionID: string): IndexState | undefined {

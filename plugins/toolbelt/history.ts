@@ -80,14 +80,20 @@ async function serviceHasSession(sessionID: string): Promise<boolean> {
   const known = serviceSessions.get(sessionID);
   if (known !== undefined) return known;
   let ok = false;
+  let definitive = false;
   try {
     const page = await serviceApi.list({ sessionID, limit: 1, order: "desc" });
     ok = Array.isArray(page.data);
-  } catch {
-    ok = false;
+    definitive = true;
+  } catch (error) {
+    // Only a definitive 404 is worth caching; transient failures (service
+    // restart, timeout) must not poison the cache for the whole process.
+    definitive = error instanceof Error && /HTTP 404/.test(error.message);
   }
-  if (serviceSessions.size > 500) serviceSessions.clear();
-  serviceSessions.set(sessionID, ok);
+  if (definitive) {
+    if (serviceSessions.size > 500) serviceSessions.clear();
+    serviceSessions.set(sessionID, ok);
+  }
   return ok;
 }
 
@@ -128,7 +134,6 @@ export interface ListSessionsOptions {
   scope: "project" | "all";
   limit?: number;
   query?: string;
-  directory?: string;
 }
 
 /**
@@ -137,57 +142,65 @@ export interface ListSessionsOptions {
  * the project's canonical path/name. Sessions that OpenCode left at the root
  * project `global` while their directory belongs to a real project are
  * re-homed client-side, so they show up in that project's listing.
+ *
+ * Each source is paged (cursor) until the requested limit is satisfied or the
+ * server stops returning pages, so projects with more than 100 sessions are
+ * not silently truncated.
  */
 export async function listSessions(ctx: PluginContext, options: ListSessionsOptions): Promise<SessionInfoLike[]> {
   const pageSize = Math.max(1, Math.min(100, options.limit ?? 20));
-  const extra: Record<string, unknown> = {
-    ...(options.directory ? { directory: options.directory } : {}),
-    limit: 100,
-  };
+  const query = options.query?.trim();
+  const terms = query ? tokenize(query) : [];
+  const projects = await listProjects();
 
-  const requests: Array<Promise<unknown>> = [];
-  if (options.scope === "project" && options.projectID) {
-    requests.push(ctx.session.list({ project: options.projectID, ...extra } as never));
-    if (options.projectID !== "global") {
-      // Pull in root-project sessions too; the project filter below re-homes
-      // the ones that physically belong to this project.
-      requests.push(ctx.session.list({ project: "global", ...extra } as never));
-    }
-  } else {
-    requests.push(ctx.session.list(extra as never));
-  }
+  const sources: Array<{ project?: string }> =
+    options.scope === "project" && options.projectID
+      ? [
+          { project: options.projectID },
+          // Pull in root-project sessions too; the project filter below
+          // re-homes the ones that physically belong to this project.
+          ...(options.projectID !== "global" ? [{ project: "global" }] : []),
+        ]
+      : [];
+  if (sources.length === 0) sources.push({ project: undefined });
+
+  // Without a query one page per source already covers the limit (≤100);
+  // with a query we may need to page further to collect enough matches.
+  const maxPages = terms.length > 0 ? 5 : 1;
 
   const seen = new Set<string>();
-  let sessions: SessionInfoLike[] = [];
-  for (const page of await Promise.all(requests)) {
-    const data = (page as { data?: unknown[] } | undefined)?.data ?? [];
-    for (const session of data as unknown as SessionInfoLike[]) {
-      if (!session?.id || seen.has(session.id)) continue;
-      seen.add(session.id);
-      sessions.push(session);
+  const sessions: SessionInfoLike[] = [];
+  outer: for (const source of sources) {
+    let cursor: string | undefined;
+    for (let page = 0; page < maxPages; page++) {
+      const request: Record<string, unknown> = { limit: 100 };
+      if (source.project) request.project = source.project;
+      if (cursor) request.cursor = cursor;
+      let raw: unknown;
+      try {
+        raw = await ctx.session.list(request as never);
+      } catch {
+        break;
+      }
+      const data = ((raw as { data?: unknown[] } | undefined)?.data ?? []) as SessionInfoLike[];
+      if (data.length === 0) break;
+      for (const session of data) {
+        if (!session?.id || seen.has(session.id)) continue;
+        seen.add(session.id);
+        if (options.scope === "project" && options.projectID) {
+          const resolved = (await resolveProjectID(session)) ?? session.projectID;
+          if (resolved !== options.projectID) continue;
+        }
+        if (terms.length > 0 && !terms.every((term) => sessionHaystack(session, projects).includes(term))) continue;
+        sessions.push(session);
+        if (sessions.length >= pageSize) break outer;
+      }
+      const next = (raw as { cursor?: { next?: string } } | undefined)?.cursor?.next;
+      if (!next || next === cursor) break;
+      cursor = next;
     }
   }
-
-  if (options.scope === "project" && options.projectID) {
-    const resolved = await Promise.all(sessions.map((session) => resolveProjectID(session)));
-    const kept: SessionInfoLike[] = [];
-    sessions.forEach((session, i) => {
-      if (resolved[i] === options.projectID) kept.push(session);
-    });
-    sessions = kept;
-  }
-
-  const query = options.query?.trim();
-  if (query) {
-    const terms = tokenize(query);
-    if (terms.length > 0) {
-      const projects = await listProjects();
-      sessions = sessions.filter((session) =>
-        terms.every((term) => sessionHaystack(session, projects).includes(term)),
-      );
-    }
-  }
-  return sessions.slice(0, pageSize);
+  return sessions;
 }
 
 export interface ListedMessages {
