@@ -357,6 +357,8 @@ export function resetEngine(): void {
 export interface EmbedStats {
   embedded: number;
   skipped: number;
+  /** Vectors kept as-is but moved to the document's current project. */
+  rehomed: number;
 }
 
 /**
@@ -366,7 +368,7 @@ export interface EmbedStats {
  * keyword-only behavior stands.
  */
 export async function embedDocs(runtime: Runtime, docs: IndexDoc[], engine?: EmbedderEngine): Promise<EmbedStats> {
-  const stats: EmbedStats = { embedded: 0, skipped: 0 };
+  const stats: EmbedStats = { embedded: 0, skipped: 0, rehomed: 0 };
   if (embedDisabled() || docs.length === 0) return stats;
   const eng = engine ?? (await getEngine());
   if (!eng) return stats;
@@ -377,7 +379,15 @@ export async function embedDocs(runtime: Runtime, docs: IndexDoc[], engine?: Emb
     try {
       const state = await runtime.index.vectorState(doc.id);
       if (state && state.model === eng.model && state.contentHash === hash) {
-        stats.skipped++;
+        if (state.projectID === doc.projectID) {
+          stats.skipped++;
+          continue;
+        }
+        // The document changed project (session moved directories). Same
+        // text and model, so the vectors are still valid: re-bucket them
+        // instead of re-embedding.
+        await runtime.index.rehomeVectors(doc.id, doc.projectID, doc.kind);
+        stats.rehomed++;
         continue;
       }
       const chunks = chunkText(text, charsPerChunk(eng.spec));

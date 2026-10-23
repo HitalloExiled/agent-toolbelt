@@ -37,6 +37,11 @@ export interface MemoryIndex {
   upsertVectors(rows: VectorRow[]): Promise<void>;
   /** Vector state for a doc (any model), or undefined when it has none. */
   vectorState(docID: string): Promise<VectorState | undefined>;
+  /**
+   * Move a doc's existing vectors to a new project (session moved
+   * directories). The vectors themselves stay valid — same text, same model.
+   */
+  rehomeVectors(docID: string, projectID: string, kind: MessageKind): Promise<void>;
   /** All vectors of a model, grouped by doc (in chunk order). */
   loadVectors(model: string, projectID?: string): Promise<Map<string, { kind: MessageKind; vecs: Float32Array[] }>>;
   /** Distinct docs carrying vectors of a model. */
@@ -313,10 +318,23 @@ class SqliteIndex implements MemoryIndex {
 
   async vectorState(docID: string): Promise<VectorState | undefined> {
     const row = this.db
-      .query("SELECT model, content_hash, COUNT(*) AS chunks FROM embeddings WHERE doc_id = ? GROUP BY model, content_hash LIMIT 1")
-      .get(docID) as { model: string; content_hash: string; chunks: number } | null;
+      .query(
+        "SELECT model, project_id, content_hash, COUNT(*) AS chunks FROM embeddings WHERE doc_id = ? GROUP BY model, content_hash LIMIT 1",
+      )
+      .get(docID) as { model: string; project_id: string; content_hash: string; chunks: number } | null;
     if (!row) return undefined;
-    return { model: String(row.model), contentHash: String(row.content_hash), chunks: Number(row.chunks) };
+    return {
+      model: String(row.model),
+      projectID: String(row.project_id),
+      contentHash: String(row.content_hash),
+      chunks: Number(row.chunks),
+    };
+  }
+
+  async rehomeVectors(docID: string, projectID: string, kind: MessageKind): Promise<void> {
+    this.db
+      .query("UPDATE embeddings SET project_id = ?, kind = ? WHERE doc_id = ?")
+      .run(projectID, kind, docID);
   }
 
   async loadVectors(
@@ -506,6 +524,8 @@ export class JsonIndex implements MemoryIndex {
   async vectorState(_docID: string): Promise<VectorState | undefined> {
     return undefined;
   }
+
+  async rehomeVectors(_docID: string, _projectID: string, _kind: MessageKind): Promise<void> {}
 
   async loadVectors(_model: string, _projectID?: string): Promise<Map<string, { kind: MessageKind; vecs: Float32Array[] }>> {
     return new Map();

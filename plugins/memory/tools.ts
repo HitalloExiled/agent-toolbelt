@@ -178,6 +178,7 @@ export async function registerTools(ctx: PluginContext, runtime: Runtime) {
           return {
             content:
               `Vector index pass (scope: ${scope}): embedded ${stats.embedded} document(s), ${stats.skipped} unchanged, ` +
+              `${stats.rehomed} re-bucketed after project moves, ` +
               `${pruned} old vector(s) from other model(s) removed. ` +
               `model: ${engine.model}, dim: ${engine.spec.dim}, ${Date.now() - t0} ms. ` +
               `Documents in scope: ${docs.length}.`,

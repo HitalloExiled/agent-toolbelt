@@ -87,6 +87,7 @@ export interface VectorRow {
 /** Current vector state of a document, across all its chunks. */
 export interface VectorState {
   model: string;
+  projectID: string;
   contentHash: string;
   chunks: number;
 }

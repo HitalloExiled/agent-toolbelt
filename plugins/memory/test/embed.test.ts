@@ -50,16 +50,24 @@ function doc(
 }
 
 /** Deterministic stand-in for the ORT engine: same text, same vector. */
-function fakeEngine(): EmbedderEngine {
+function fakeEngine() {
   const spec = EMBED_MODELS["minilm-qint8"]!;
+  const calls: string[] = [];
   const embedText = async (text: string): Promise<Float32Array> => {
+    calls.push(text);
     const vec = new Float32Array(8);
     for (let i = 0; i < 8; i++) {
       vec[i] = ((text.charCodeAt((i * 7) % Math.max(1, text.length)) ?? 0) + i * 13) % 17;
     }
     return normalize(vec);
   };
-  return { model: spec.id, spec, embedText, embedMany: (texts) => Promise.all(texts.map(embedText)) };
+  const engine: EmbedderEngine = {
+    model: spec.id,
+    spec,
+    embedText,
+    embedMany: (texts) => Promise.all(texts.map(embedText)),
+  };
+  return { engine, calls };
 }
 
 async function freshRuntime() {
@@ -129,7 +137,7 @@ describe("SqliteIndex vector store", () => {
       { docID: "d2", projectID: "pB", kind: "summary", model: "m1", contentHash: "h2", chunk: 0, vec: c },
     ]);
 
-    expect(await index.vectorState("d1")).toEqual({ model: "m1", contentHash: "h1", chunks: 2 });
+    expect(await index.vectorState("d1")).toEqual({ model: "m1", projectID: "pA", contentHash: "h1", chunks: 2 });
 
     const loaded = await index.loadVectors("m1");
     expect(loaded.get("d1")!.vecs).toHaveLength(2);
@@ -203,17 +211,17 @@ describe("JsonIndex vector stubs", () => {
 describe("embedDocs", () => {
   test("embeds, skips unchanged text, re-embeds changed text", async () => {
     const { index, runtime } = await freshRuntime();
-    const engine = fakeEngine();
+    const { engine } = fakeEngine();
     const d1 = doc("e1", "primeiro texto do documento");
 
     await index.upsert([d1]);
-    expect(await embedDocs(runtime, [d1], engine)).toEqual({ embedded: 1, skipped: 0 });
+    expect(await embedDocs(runtime, [d1], engine)).toEqual({ embedded: 1, skipped: 0, rehomed: 0 });
     expect(await index.vectorState("e1")).toMatchObject({ model: "minilm-qint8" });
 
-    expect(await embedDocs(runtime, [d1], engine)).toEqual({ embedded: 0, skipped: 1 });
+    expect(await embedDocs(runtime, [d1], engine)).toEqual({ embedded: 0, skipped: 1, rehomed: 0 });
 
     const changed = { ...d1, text: "texto diferente agora" };
-    expect(await embedDocs(runtime, [changed], engine)).toEqual({ embedded: 1, skipped: 0 });
+    expect(await embedDocs(runtime, [changed], engine)).toEqual({ embedded: 1, skipped: 0, rehomed: 0 });
     expect((await index.vectorState("e1"))!.contentHash).toBe(hashText(changed.text));
 
     // Text longer than the cap is embedded (and hashed) at the capped length.
@@ -231,11 +239,43 @@ describe("embedDocs", () => {
     await index.close();
   });
 
+  test("re-homes vectors when a document changes project (session move)", async () => {
+    const { index, runtime } = await freshRuntime();
+    const { engine, calls } = fakeEngine();
+    const d = doc("e10", "texto que muda de projeto", "pA");
+
+    await index.upsert([d]);
+    await embedDocs(runtime, [d], engine);
+    expect(await index.vectorState("e10")).toMatchObject({ projectID: "pA" });
+
+    // The session moves to pB: the index re-upserts the doc under pB, the
+    // text is unchanged, so no re-embedding must happen — only a re-bucket.
+    const moved = { ...d, projectID: "pB" };
+    await index.upsert([moved]);
+    const before = calls.length;
+    const stats = await embedDocs(runtime, [moved], engine);
+
+    expect(stats).toEqual({ embedded: 0, skipped: 0, rehomed: 1 });
+    expect(calls.length).toBe(before);
+    expect(await index.vectorState("e10")).toMatchObject({ projectID: "pB" });
+    expect((await index.loadVectors("minilm-qint8", "pB")).has("e10")).toBe(true);
+    expect((await index.loadVectors("minilm-qint8", "pA")).has("e10")).toBe(false);
+
+    // A second pass with the doc already in pB is a plain skip.
+    expect(await embedDocs(runtime, [moved], engine)).toEqual({ embedded: 0, skipped: 1, rehomed: 0 });
+
+    await index.close();
+  });
+
   test("is a no-op when embedding is disabled", async () => {
     const { index, runtime } = await freshRuntime();
     process.env.MEMORY_EMBED_DISABLED = "1";
     try {
-      expect(await embedDocs(runtime, [doc("e9", "any text")], fakeEngine())).toEqual({ embedded: 0, skipped: 0 });
+      expect(await embedDocs(runtime, [doc("e9", "any text")], fakeEngine().engine)).toEqual({
+        embedded: 0,
+        skipped: 0,
+        rehomed: 0,
+      });
       expect(await index.vectorState("e9")).toBeUndefined();
     } finally {
       delete process.env.MEMORY_EMBED_DISABLED;
