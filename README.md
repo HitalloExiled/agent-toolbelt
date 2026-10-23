@@ -156,18 +156,23 @@ Carregado automaticamente como pacote local em `~/.config/opencode/plugins/memor
    para ler). Isso nunca é persistido — é recalculado a cada injeção.
 3. **Permite busca cross-sessão.** Um índice derivado (SQLite FTS5, com
    fallback `LIKE` e, por último, JSON) guarda apenas texto de usuário, texto
-   de assistente e resumos — nunca reasoning, nunca chamadas de tool. O
-   backfill é preguiçoso e incremental: só acontece quando alguém busca, e só
-   processa sessões/mensagens novas desde a última vez. `scope=all` busca o
-   que já está indexado + todos os resumos em disco; para indexar todos os
-   projetos manualmente, use `action=index-all` (ou `/index-all`).
+   de assistente e resumos — nunca reasoning, nunca chamadas de tool. A busca
+   é **híbrida**: além das palavras-chave (FTS5), uma camada semântica local
+   (modelos de embedding rodando em CPU, sem daemon nem serviço remoto)
+   encontra documentos por intenção, mesmo sem sobreposição de termos — e os
+   dois rankings são fundidos por RRF. O backfill é preguiçoso e incremental:
+   só acontece quando alguém busca, e só processa sessões/mensagens novas
+   desde a última vez. `scope=all` busca o que já está indexado + todos os
+   resumos em disco; para indexar todos os projetos manualmente, use
+   `action=index-all` (ou `/index-all`).
 
 ### Onde os dados ficam
 
 ```
 $XDG_DATA_HOME/opencode/memory/
 ├── compactions/<projectID>/<timestampUTC>-<messageID>.md   # resumos, um por compactação
-├── index.db          # índice FTS5 derivado (ou index.json sem SQLite)
+├── index.db          # índice FTS5 derivado + tabela `embeddings` (ou index.json sem SQLite)
+└── embed-models/<model>/   # pesos dos modelos de embedding locais (baixados uma vez, com checagem de tamanho)
 ```
 
 O diretório vive dentro da data dir do próprio OpenCode
@@ -183,12 +188,41 @@ leitura). O diretório é compartilhado com o banco do CLI `notes`
 (`session.projectID`); sessões sem projeto caem em `global`. Nada é
 versionado no repo nem escrito dentro dele.
 
+### Busca semântica local (híbrida com o FTS5)
+
+A consulta de `memory_search` roda dois rankings em paralelo e funde-os por
+Reciprocal Rank Fusion (RRF, k=60). Cada resultado carrega a tag `via:`
+indicando a camada que o achou: `fts` (só palavras-chave), `vec`
+(só semântica) ou `fts+vec` (as duas).
+
+- **Tudo local.** Os embeddings rodam na CPU desta máquina via
+  `onnxruntime-node` (modelos ONNX quantizados) — sem daemon, sem API, sem
+  rede por consulta. Os pesos são baixados uma única vez, com checagem de
+  tamanho, em `embed-models/<model>/`.
+- **Modelo padrão: `minilm-qint8`** (384 dim, multilíngue, int8, 235 MB).
+  Em teste com resumos reais de compactação e consultas em PT sem sobreposição
+  de termos, acertou o top-3 com margem clara e indexou 83 documentos em ~16 s.
+  `e5-large-qint8` (1024 dim, 562 MB) fica disponível via
+  `MEMORY_EMBED_MODEL=e5-large-qint8`: funciona, mas o export ONNX dele tem o
+  espaço de scores comprimido (margem menor entre relevantes e irrelevantes)
+  e é ~3× mais lento.
+- **Multi-vetor por documento.** O texto é cortado em 4096 caracteres e
+  dividido em chunks que cabem na janela do modelo; a pontuação do documento
+  é o máximo cosseno entre seus chunks.
+- **Lazy e incremental.** Os vetores são gerados em segundo plano após cada
+  upsert (nunca bloqueiam a busca por palavras). Documentos inalterados (mesmo
+  hash de conteúdo + mesmo modelo) são pulados. Trocar de modelo invalida os
+  vetores antigos: rode `action=embed` de novo e os obsoletos são podados.
+- **Degradação graciosa.** Se o engine não iniciar (addon nativo ausente,
+  pesos incompletos, `MEMORY_EMBED_DISABLED=1`), a busca volta a ser só por
+  palavras-chave e o resultado informa isso.
+
 ### Tools (read-only, com escopo de projeto por padrão)
 
 | Tool | Para quê |
 |---|---|
 | `memory_summaries` | listar/buscar/ler resumos de compactação (`detail=brief\|full\|sections`) + estado do repo (`action=repo`) |
-| `memory_search` | buscar no índice derivado (resumos + texto de usuário/assistente); `scope=project\|all`; `action=index-all` indexa todos os projetos manualmente (`rebuild=true` para rebuild completo) |
+| `memory_search` | busca híbrida (FTS5 + semântica local, fundida por RRF; cada hit tagueado `via: fts\|vec\|fts+vec`) no índice derivado (resumos + texto de usuário/assistente); `scope=project\|all`; `action=index-all` indexa todos os projetos manualmente (`rebuild=true` para rebuild completo); `action=embed` (re)constrói os vetores do escopo |
 | `memory_history` | inspecionar a timeline completa de uma sessão (listar sessões, ler página, buscar, buscar uma mensagem); tool calls e reasoning só entram com `includeTools`/`includeReasoning` explícitos; sessões de outro projeto exigem `scope=all` |
 
 ### Comandos
@@ -208,6 +242,8 @@ git). Cada um é um atalho que chama as tools acima.
 | `MEMORY_INDEX_TEXT_MAX` | teto de caracteres de texto indexado por documento | — |
 | `MEMORY_BACKFILL_SESSIONS` | teto de sessões processadas por backfill | — |
 | `MEMORY_BACKFILL_MESSAGES` | teto de mensagens processadas por sessão no backfill | — |
+| `MEMORY_EMBED_MODEL` | modelo de embedding local da camada semântica (`minilm-qint8` ou `e5-large-qint8`); trocar o modelo invalida os vetores antigos | `minilm-qint8` |
+| `MEMORY_EMBED_DISABLED` | `1` desliga a camada semântica (busca só por palavras-chave) | — |
 
 ### Privacidade e remoção
 

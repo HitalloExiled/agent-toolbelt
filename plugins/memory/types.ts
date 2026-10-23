@@ -69,6 +69,26 @@ export interface IndexDoc {
 export interface SearchHit extends IndexDoc {
   snippet: string;
   rank: number;
+  /** Which layer(s) surfaced the hit in hybrid search. */
+  via?: "fts" | "vec" | "fts+vec";
+}
+
+/** One chunk vector for a document (stored as a BLOB of float32 bytes). */
+export interface VectorRow {
+  docID: string;
+  projectID: string;
+  kind: MessageKind;
+  model: string;
+  contentHash: string;
+  chunk: number;
+  vec: Float32Array;
+}
+
+/** Current vector state of a document, across all its chunks. */
+export interface VectorState {
+  model: string;
+  contentHash: string;
+  chunks: number;
 }
 
 export interface IndexState {

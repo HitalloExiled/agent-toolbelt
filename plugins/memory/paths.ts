@@ -70,3 +70,18 @@ export function backfillMessageLimit(): number {
   const value = Number(process.env.MEMORY_BACKFILL_MESSAGES ?? "4000");
   return Number.isFinite(value) && value > 0 ? Math.floor(value) : 4000;
 }
+
+/** Root for the local embedding model weights (downloaded once). */
+export function embedModelsDir(): string {
+  return join(dataRoot(), "embed-models");
+}
+
+/** Active embedding model id (see EMBED_MODELS in embed.ts). */
+export function embedModelName(): string {
+  return process.env.MEMORY_EMBED_MODEL?.trim() || "minilm-qint8";
+}
+
+/** Set MEMORY_EMBED_DISABLED=1 to turn the semantic layer off (FTS only). */
+export function embedDisabled(): boolean {
+  return process.env.MEMORY_EMBED_DISABLED?.trim() === "1";
+}

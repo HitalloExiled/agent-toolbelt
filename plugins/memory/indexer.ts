@@ -3,6 +3,7 @@
 import { readdir } from "node:fs/promises";
 
 import type { Runtime } from "./runtime.js";
+import { embedDocs } from "./embed.js";
 import { backfillMessageLimit, backfillSessionLimit, compactionsRoot } from "./paths.js";
 import { captureCompaction, listAllSummaries, listSummaries, pruneSummaries, toIndexDoc } from "./summaries.js";
 import { extractNarrative, listAllMessages, listSessions, messageCreated } from "./history.js";
@@ -33,8 +34,20 @@ export async function indexSummaryFiles(runtime: Runtime, projectID?: string): P
     console.error(`[memory] summary index reconciliation failed: ${error instanceof Error ? error.message : error}`);
   }
   if (records.length === 0) return 0;
-  await runtime.index.upsert(records.map(toIndexDoc));
+  const docs = records.map(toIndexDoc);
+  await runtime.index.upsert(docs);
+  embedAfterUpsert(runtime, docs);
   return records.length;
+}
+
+/**
+ * The semantic layer runs after the keyword index lands, fire-and-forget:
+ * embedding is CPU work that must never block (or fail) the FTS path.
+ */
+function embedAfterUpsert(runtime: Runtime, docs: IndexDoc[]): void {
+  void embedDocs(runtime, docs).catch((error) =>
+    console.error(`[memory] background embedding failed: ${error instanceof Error ? error.message : String(error)}`),
+  );
 }
 
 function sessionUpdated(session: SessionInfoLike): number {
@@ -118,6 +131,7 @@ async function doBackfill(runtime: Runtime, projectID: string): Promise<Backfill
       try {
         await index.upsert(docs);
         indexedMessages += docs.length;
+        embedAfterUpsert(runtime, docs);
       } catch (error) {
         console.error(`[memory] index upsert failed for ${session.id}: ${error instanceof Error ? error.message : String(error)}`);
         partial = true;

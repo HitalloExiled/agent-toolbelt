@@ -2,7 +2,9 @@
 
 import type { PluginContext } from "./context.js";
 import type { Runtime } from "./runtime.js";
-import type { MessageKind } from "./types.js";
+import type { MessageKind, SearchHit } from "./types.js";
+import { cosine, embedDocs, getEngine, rrfFuse } from "./embed.js";
+import { embedDisabled, embedModelName } from "./paths.js";
 import { backfillProject, indexAllProjects, reindexProject, indexSummaryFiles } from "./indexer.js";
 import { resolveProjectID } from "./projects.js";
 import { repoSnapshot } from "./repo.js";
@@ -29,7 +31,7 @@ import {
   searchSession,
 } from "./history.js";
 import type { HistoryPage, HistorySearchHit, HistorySource } from "./history.js";
-import { fmtDate, normalizeWhitespace } from "./util.js";
+import { fmtDate, normalizeWhitespace, snippet, tokenize } from "./util.js";
 
 function str(input: Record<string, unknown>, key: string): string | undefined {
   const value = input[key];
@@ -72,7 +74,9 @@ export async function registerTools(ctx: PluginContext, runtime: Runtime) {
       description: [
         "Search past conversations and compaction summaries across sessions of this project.",
         "The index holds only user text, assistant text and compaction summaries (never reasoning or tool payloads).",
-        "Actions: search (default), stats, reindex, index-all.",
+        "Search is hybrid: keyword (FTS5) plus local CPU semantic search, fused via RRF; hits are tagged via: fts|vec|fts+vec.",
+        "Actions: search (default), stats, reindex, index-all, embed.",
+        "action=embed (re)builds the local vector index for the scope; vectors are refreshed automatically as documents are indexed.",
         "scope=all searches what is already indexed plus every summary on disk; run action=index-all first to index all projects.",
       ].join(" "),
       input: {
@@ -80,8 +84,9 @@ export async function registerTools(ctx: PluginContext, runtime: Runtime) {
         properties: {
           action: {
             type: "string",
-            enum: ["search", "stats", "reindex", "index-all"],
-            description: "Defaults to search. index-all manually indexes every known project.",
+            enum: ["search", "stats", "reindex", "index-all", "embed"],
+            description:
+              "Defaults to search. index-all manually indexes every known project. embed (re)builds the vector index for the scope.",
           },
           query: { type: "string", description: "Words to look for. Required for action=search." },
           scope: {
@@ -114,14 +119,20 @@ export async function registerTools(ctx: PluginContext, runtime: Runtime) {
             runtime.index.count(projectID),
             listSummaries(projectID, 1000),
           ]);
-          return {
-            content: [
-              `backend: ${runtime.index.backend}${runtime.index.error ? ` (${runtime.index.error})` : ""}`,
-              `project: ${projectID}`,
-              `indexed documents: ${mine} in this project, ${all} total`,
-              `summary files in this project: ${summaries.length}`,
-            ].join("\n"),
-          };
+          const lines = [
+            `backend: ${runtime.index.backend}${runtime.index.error ? ` (${runtime.index.error})` : ""}`,
+            `project: ${projectID}`,
+            `indexed documents: ${mine} in this project, ${all} total`,
+            `summary files in this project: ${summaries.length}`,
+          ];
+          if (embedDisabled()) {
+            lines.push("semantic layer: disabled (MEMORY_EMBED_DISABLED=1)");
+          } else {
+            const model = embedModelName();
+            const embedded = await runtime.index.vectorCount(model).catch(() => 0);
+            lines.push(`embedded vectors: ${embedded} document(s) (model: ${model})`);
+          }
+          return { content: lines.join("\n") };
         }
 
         if (action === "reindex") {
@@ -150,8 +161,31 @@ export async function registerTools(ctx: PluginContext, runtime: Runtime) {
           };
         }
 
+        if (action === "embed") {
+          const scope = str(input, "scope") === "all" ? "all" : "project";
+          const engine = await getEngine();
+          if (!engine) {
+            return {
+              content:
+                `Vector engine unavailable${embedDisabled() ? " (MEMORY_EMBED_DISABLED=1)" : ""}. ` +
+                `Model: ${embedModelName()}. Check the service logs; search stays keyword-only until it starts.`,
+            };
+          }
+          const docs = await runtime.index.docs(scope === "project" ? projectID : undefined);
+          const t0 = Date.now();
+          const stats = await embedDocs(runtime, docs, engine);
+          const pruned = await runtime.index.pruneOldVectors(engine.model);
+          return {
+            content:
+              `Vector index pass (scope: ${scope}): embedded ${stats.embedded} document(s), ${stats.skipped} unchanged, ` +
+              `${pruned} old vector(s) from other model(s) removed. ` +
+              `model: ${engine.model}, dim: ${engine.spec.dim}, ${Date.now() - t0} ms. ` +
+              `Documents in scope: ${docs.length}.`,
+          };
+        }
+
         const query = str(input, "query");
-        if (!query) return { content: "Provide `query` (or use action=stats / action=reindex / action=index-all)." };
+        if (!query) return { content: "Provide `query` (or use action=stats / action=reindex / action=index-all / action=embed)." };
 
         const scope = str(input, "scope") === "all" ? "all" : "project";
         const kind = (str(input, "kind") ?? "any") as MessageKind | "any";
@@ -168,19 +202,71 @@ export async function registerTools(ctx: PluginContext, runtime: Runtime) {
           }
         }
 
-        const hits = await runtime.index.search(query, { projectID, scope, kind, limit });
+        const terms = tokenize(query);
+        const ftsHits = await runtime.index.search(query, { projectID, scope, kind, limit: limit * 3 });
+
+        let vecHits: Array<{ id: string; score: number }> = [];
+        let vectorNote = "";
+        if (!embedDisabled()) {
+          const engine = await getEngine();
+          if (!engine) {
+            vectorNote = "\n\n> Vector layer unavailable; results are keyword-only.";
+          } else {
+            try {
+              const qvec = await engine.embedText(engine.spec.queryPrefix + query);
+              const vectors = await runtime.index.loadVectors(engine.model, scope === "project" ? projectID : undefined);
+              for (const [id, entry] of vectors) {
+                if (kind !== "any" && entry.kind !== kind) continue;
+                let best = -Infinity;
+                for (const vec of entry.vecs) {
+                  const score = cosine(qvec, vec);
+                  if (score > best) best = score;
+                }
+                if (best > -Infinity) vecHits.push({ id, score: best });
+              }
+              vecHits.sort((a, b) => b.score - a.score);
+              vecHits = vecHits.slice(0, limit * 3);
+            } catch (error) {
+              vectorNote = `\n\n> Vector layer failed (${error instanceof Error ? error.message : String(error)}); results are keyword-only.`;
+            }
+          }
+        }
+
+        let hits: SearchHit[];
+        if (vecHits.length === 0) {
+          hits = ftsHits.map((hit) => ({ ...hit, via: "fts" as const }));
+        } else {
+          const fused = rrfFuse(ftsHits.map((hit) => hit.id), vecHits.map((hit) => hit.id), limit);
+          const byFts = new Map(ftsHits.map((hit) => [hit.id, hit]));
+          const missing = fused.filter((f) => !byFts.has(f.id)).map((f) => f.id);
+          const extras = missing.length > 0 ? await runtime.index.docsByIds(missing) : [];
+          const byDoc = new Map(extras.map((doc) => [doc.id, doc]));
+          hits = fused
+            .map((f): SearchHit | undefined => {
+              const doc = byFts.get(f.id) ?? byDoc.get(f.id);
+              if (!doc) return undefined;
+              return {
+                ...doc,
+                rank: byFts.get(f.id)?.rank ?? 0,
+                snippet: snippet(doc.text, terms),
+                via: f.via,
+              };
+            })
+            .filter((hit): hit is SearchHit => hit !== undefined);
+        }
+
         if (hits.length === 0) {
           return {
             content:
               `No matches for "${query}" (scope: ${scope}, kind: ${kind}).` +
-              `\nTry scope="all", a different wording, or action="reindex".${partialNote}`,
+              `\nTry scope="all", a different wording, or action="reindex".${partialNote}${vectorNote}`,
           };
         }
 
         const lines = hits.map((hit) => {
           const session = hit.sessionID === context.sessionID ? "this session" : `\`${hit.sessionID}\``;
           return (
-            `- **${fmtDate(hit.created)}** · ${hit.kind} · ${session}` +
+            `- **${fmtDate(hit.created)}** · ${hit.kind} · via: ${hit.via ?? "fts"} · ${session}` +
             `${hit.title ? ` — ${hit.title}` : ""}` +
             `${hit.kind === "summary" && hit.messageID ? ` · summary \`${hit.messageID}\`` : ""}` +
             `\n  ${normalizeWhitespace(hit.snippet)}`
@@ -189,7 +275,7 @@ export async function registerTools(ctx: PluginContext, runtime: Runtime) {
         return {
           content:
             `${hits.length} match(es) for "${query}" (scope: ${scope}).\n\n${lines.join("\n")}` +
-            `\n\nRead more with memory_summaries (summaries) or memory_history (full messages).${partialNote}`,
+            `\n\nRead more with memory_summaries (summaries) or memory_history (full messages).${partialNote}${vectorNote}`,
         };
       },
     });

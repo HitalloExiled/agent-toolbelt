@@ -7,7 +7,7 @@
 import { chmod, readFile, rename } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { indexTextMax, indexPath, jsonIndexPath } from "./paths.js";
-import type { IndexDoc, IndexState, MessageKind, SearchHit } from "./types.js";
+import type { IndexDoc, IndexState, MessageKind, SearchHit, VectorRow, VectorState } from "./types.js";
 import { ensureDataDirs, atomicWrite } from "./storage.js";
 import { clip, snippet, tokenize } from "./util.js";
 
@@ -33,6 +33,20 @@ export interface MemoryIndex {
   clearAll(): Promise<void>;
   flush(): Promise<void>;
   close(): Promise<void>;
+  /** Replace the vectors stored for each doc (one transaction per doc). */
+  upsertVectors(rows: VectorRow[]): Promise<void>;
+  /** Vector state for a doc (any model), or undefined when it has none. */
+  vectorState(docID: string): Promise<VectorState | undefined>;
+  /** All vectors of a model, grouped by doc (in chunk order). */
+  loadVectors(model: string, projectID?: string): Promise<Map<string, { kind: MessageKind; vecs: Float32Array[] }>>;
+  /** Distinct docs carrying vectors of a model. */
+  vectorCount(model: string, projectID?: string): Promise<number>;
+  deleteVectors(docIDs: string[]): Promise<void>;
+  /** Drop vectors stored by other models; returns how many rows were removed. */
+  pruneOldVectors(model: string): Promise<number>;
+  /** Every indexed doc (optionally of one project). */
+  docs(projectID?: string): Promise<IndexDoc[]>;
+  docsByIds(ids: string[]): Promise<IndexDoc[]>;
 }
 
 function dedupe(docs: IndexDoc[]): IndexDoc[] {
@@ -79,6 +93,17 @@ class SqliteIndex implements MemoryIndex {
         indexed_at INTEGER NOT NULL
       );
       CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS embeddings (
+        doc_id TEXT NOT NULL,
+        project_id TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        model TEXT NOT NULL,
+        content_hash TEXT NOT NULL,
+        chunk INTEGER NOT NULL,
+        vec BLOB NOT NULL,
+        PRIMARY KEY (doc_id, chunk)
+      );
+      CREATE INDEX IF NOT EXISTS embeddings_model ON embeddings(model, project_id);
     `);
     this.fts = true;
     try {
@@ -228,12 +253,17 @@ class SqliteIndex implements MemoryIndex {
     const select = this.db.query("SELECT rowid FROM documents WHERE id = ?");
     const delDoc = this.db.query("DELETE FROM documents WHERE id = ?");
     const delFts = this.db.query("DELETE FROM documents_fts WHERE rowid = ?");
+    const delVec = this.db.query("DELETE FROM embeddings WHERE doc_id = ?");
     const work = () => {
       for (const id of ids) {
         const row = select.get(id) as { rowid: number } | null;
-        if (!row) continue;
-        if (this.fts) delFts.run(Number(row.rowid));
-        delDoc.run(id);
+        if (row) {
+          if (this.fts) delFts.run(Number(row.rowid));
+          delDoc.run(id);
+        }
+        // Vectors are dropped unconditionally: an orphan vector set is
+        // never useful, even if the document row is already gone.
+        delVec.run(id);
       }
     };
     this.db.transaction(work)();
@@ -247,12 +277,115 @@ class SqliteIndex implements MemoryIndex {
     }
     this.db.query("DELETE FROM documents WHERE project_id = ?").run(projectID);
     this.db.query("DELETE FROM sessions_indexed WHERE project_id = ?").run(projectID);
+    this.db.query("DELETE FROM embeddings WHERE project_id = ?").run(projectID);
   }
 
   async clearAll(): Promise<void> {
     if (this.fts) this.db.exec("DELETE FROM documents_fts");
     this.db.exec("DELETE FROM documents");
     this.db.exec("DELETE FROM sessions_indexed");
+    this.db.exec("DELETE FROM embeddings");
+  }
+
+  async upsertVectors(rows: VectorRow[]): Promise<void> {
+    if (rows.length === 0) return;
+    const byDoc = new Map<string, VectorRow[]>();
+    for (const row of rows) {
+      const list = byDoc.get(row.docID);
+      if (list) list.push(row);
+      else byDoc.set(row.docID, [row]);
+    }
+    const del = this.db.query("DELETE FROM embeddings WHERE doc_id = ?");
+    const insert = this.db.query(
+      "INSERT INTO embeddings (doc_id, project_id, kind, model, content_hash, chunk, vec) VALUES (?, ?, ?, ?, ?, ?, ?)",
+    );
+    const work = () => {
+      for (const [docID, docRows] of byDoc) {
+        // Full replacement: a shorter document must not keep stale chunks.
+        del.run(docID);
+        for (const row of docRows) {
+          insert.run(row.docID, row.projectID, row.kind, row.model, row.contentHash, row.chunk, toBlob(row.vec));
+        }
+      }
+    };
+    this.db.transaction(work)();
+  }
+
+  async vectorState(docID: string): Promise<VectorState | undefined> {
+    const row = this.db
+      .query("SELECT model, content_hash, COUNT(*) AS chunks FROM embeddings WHERE doc_id = ? GROUP BY model, content_hash LIMIT 1")
+      .get(docID) as { model: string; content_hash: string; chunks: number } | null;
+    if (!row) return undefined;
+    return { model: String(row.model), contentHash: String(row.content_hash), chunks: Number(row.chunks) };
+  }
+
+  async loadVectors(
+    model: string,
+    projectID?: string,
+  ): Promise<Map<string, { kind: MessageKind; vecs: Float32Array[] }>> {
+    const rows = projectID
+      ? (this.db
+          .query("SELECT doc_id, kind, chunk, vec FROM embeddings WHERE model = ? AND project_id = ? ORDER BY doc_id, chunk")
+          .all(model, projectID) as any[])
+      : (this.db
+          .query("SELECT doc_id, kind, chunk, vec FROM embeddings WHERE model = ? ORDER BY doc_id, chunk")
+          .all(model) as any[]);
+    const out = new Map<string, { kind: MessageKind; vecs: Float32Array[] }>();
+    for (const row of rows) {
+      let entry = out.get(String(row.doc_id));
+      if (!entry) {
+        entry = { kind: String(row.kind) as MessageKind, vecs: [] };
+        out.set(String(row.doc_id), entry);
+      }
+      entry.vecs.push(fromBlob(row.vec));
+    }
+    return out;
+  }
+
+  async vectorCount(model: string, projectID?: string): Promise<number> {
+    const row = projectID
+      ? (this.db
+          .query("SELECT COUNT(DISTINCT doc_id) AS n FROM embeddings WHERE model = ? AND project_id = ?")
+          .get(model, projectID) as { n: number })
+      : (this.db.query("SELECT COUNT(DISTINCT doc_id) AS n FROM embeddings WHERE model = ?").get(model) as { n: number });
+    return Number(row?.n ?? 0);
+  }
+
+  async deleteVectors(docIDs: string[]): Promise<void> {
+    if (docIDs.length === 0) return;
+    const del = this.db.query("DELETE FROM embeddings WHERE doc_id = ?");
+    this.db.transaction(() => {
+      for (const id of docIDs) del.run(id);
+    })();
+  }
+
+  async pruneOldVectors(model: string): Promise<number> {
+    const row = this.db.query("SELECT COUNT(*) AS n FROM embeddings WHERE model != ?").get(model) as { n: number };
+    const count = Number(row?.n ?? 0);
+    if (count > 0) this.db.query("DELETE FROM embeddings WHERE model != ?").run(model);
+    return count;
+  }
+
+  async docs(projectID?: string): Promise<IndexDoc[]> {
+    const rows = projectID
+      ? (this.db
+          .query("SELECT id, project_id, session_id, message_id, kind, created, title, text FROM documents WHERE project_id = ?")
+          .all(projectID) as any[])
+      : (this.db
+          .query("SELECT id, project_id, session_id, message_id, kind, created, title, text FROM documents")
+          .all() as any[]);
+    return rows.map(fromRow);
+  }
+
+  async docsByIds(ids: string[]): Promise<IndexDoc[]> {
+    if (ids.length === 0) return [];
+    const placeholders = ids.map(() => "?").join(", ");
+    const rows = this.db
+      .query(
+        `SELECT id, project_id, session_id, message_id, kind, created, title, text FROM documents WHERE id IN (${placeholders})`,
+      )
+      .all(...ids) as any[];
+    return rows.map(fromRow);
   }
 
   async flush(): Promise<void> {}
@@ -276,7 +409,7 @@ export class JsonIndex implements MemoryIndex {
   readonly backend = "json" as const;
   error: string;
   private readonly path: string;
-  private readonly docs = new Map<string, IndexDoc>();
+  private readonly documents = new Map<string, IndexDoc>();
   private readonly sessions = new Map<string, IndexState>();
   private dirty = false;
 
@@ -291,7 +424,7 @@ export class JsonIndex implements MemoryIndex {
       try {
         const parsed = JSON.parse(await readFile(path, "utf8")) as Partial<JsonState>;
         for (const doc of parsed.documents ?? []) {
-          if (doc && typeof doc.id === "string" && typeof doc.text === "string") index.docs.set(doc.id, doc);
+          if (doc && typeof doc.id === "string" && typeof doc.text === "string") index.documents.set(doc.id, doc);
         }
         for (const [sessionID, state] of Object.entries(parsed.sessions ?? {})) {
           if (state && typeof state.updatedAt === "number") index.sessions.set(sessionID, state);
@@ -305,12 +438,12 @@ export class JsonIndex implements MemoryIndex {
 
   async upsert(input: IndexDoc[]): Promise<void> {
     for (const doc of dedupe(input)) {
-      this.docs.set(doc.id, { ...doc, text: clip(doc.text, indexTextMax(), "") });
+      this.documents.set(doc.id, { ...doc, text: clip(doc.text, indexTextMax(), "") });
     }
     // Keep the fallback bounded; the durable files are unaffected.
-    if (this.docs.size > 20_000) {
-      const oldest = [...this.docs.values()].sort((a, b) => a.created - b.created);
-      for (const doc of oldest.slice(0, this.docs.size - 20_000)) this.docs.delete(doc.id);
+    if (this.documents.size > 20_000) {
+      const oldest = [...this.documents.values()].sort((a, b) => a.created - b.created);
+      for (const doc of oldest.slice(0, this.documents.size - 20_000)) this.documents.delete(doc.id);
     }
     this.dirty = true;
     await this.flush();
@@ -320,7 +453,7 @@ export class JsonIndex implements MemoryIndex {
     const terms = tokenize(query);
     if (terms.length === 0) return [];
     const hits: SearchHit[] = [];
-    for (const doc of this.docs.values()) {
+    for (const doc of this.documents.values()) {
       if (options.scope === "project" && doc.projectID !== options.projectID) continue;
       if (options.kind && options.kind !== "any" && doc.kind !== options.kind) continue;
       const haystack = `${doc.title ?? ""}\n${doc.text}`.toLocaleLowerCase();
@@ -342,7 +475,7 @@ export class JsonIndex implements MemoryIndex {
 
   async summaryIDs(projectID?: string): Promise<string[]> {
     const out: string[] = [];
-    for (const [id, doc] of this.docs) {
+    for (const [id, doc] of this.documents) {
       if (doc.kind !== "summary") continue;
       if (projectID && doc.projectID !== projectID) continue;
       out.push(id);
@@ -360,14 +493,49 @@ export class JsonIndex implements MemoryIndex {
   }
 
   async count(projectID?: string): Promise<number> {
-    if (!projectID) return this.docs.size;
+    if (!projectID) return this.documents.size;
     let n = 0;
-    for (const doc of this.docs.values()) if (doc.projectID === projectID) n++;
+    for (const doc of this.documents.values()) if (doc.projectID === projectID) n++;
     return n;
   }
 
+  // The JSON fallback keeps no vector layer: everything is a no-op, and
+  // search degrades to keyword-only.
+  async upsertVectors(_rows: VectorRow[]): Promise<void> {}
+
+  async vectorState(_docID: string): Promise<VectorState | undefined> {
+    return undefined;
+  }
+
+  async loadVectors(_model: string, _projectID?: string): Promise<Map<string, { kind: MessageKind; vecs: Float32Array[] }>> {
+    return new Map();
+  }
+
+  async vectorCount(_model: string, _projectID?: string): Promise<number> {
+    return 0;
+  }
+
+  async deleteVectors(_docIDs: string[]): Promise<void> {}
+
+  async pruneOldVectors(_model: string): Promise<number> {
+    return 0;
+  }
+
+  async docs(projectID?: string): Promise<IndexDoc[]> {
+    const out: IndexDoc[] = [];
+    for (const doc of this.documents.values()) if (!projectID || doc.projectID === projectID) out.push(doc);
+    return out;
+  }
+
+  async docsByIds(ids: string[]): Promise<IndexDoc[]> {
+    const wanted = new Set(ids);
+    const out: IndexDoc[] = [];
+    for (const doc of this.documents.values()) if (wanted.has(doc.id)) out.push(doc);
+    return out;
+  }
+
   async remove(ids: string[]): Promise<void> {
-    for (const id of ids) this.docs.delete(id);
+    for (const id of ids) this.documents.delete(id);
     if (ids.length > 0) {
       this.dirty = true;
       await this.flush();
@@ -375,14 +543,14 @@ export class JsonIndex implements MemoryIndex {
   }
 
   async clearProject(projectID: string): Promise<void> {
-    for (const [id, doc] of this.docs) if (doc.projectID === projectID) this.docs.delete(id);
+    for (const [id, doc] of this.documents) if (doc.projectID === projectID) this.documents.delete(id);
     for (const [sessionID, state] of this.sessions) if (state.projectID === projectID) this.sessions.delete(sessionID);
     this.dirty = true;
     await this.flush();
   }
 
   async clearAll(): Promise<void> {
-    this.docs.clear();
+    this.documents.clear();
     this.sessions.clear();
     this.dirty = true;
     await this.flush();
@@ -392,7 +560,7 @@ export class JsonIndex implements MemoryIndex {
     if (!this.dirty) return;
     const state: JsonState = {
       version: 1,
-      documents: [...this.docs.values()],
+      documents: [...this.documents.values()],
       sessions: Object.fromEntries(this.sessions),
     };
     await atomicWrite(this.path, JSON.stringify(state), 0o600);
@@ -402,6 +570,15 @@ export class JsonIndex implements MemoryIndex {
   async close(): Promise<void> {
     await this.flush();
   }
+}
+
+function toBlob(vec: Float32Array): Uint8Array {
+  return new Uint8Array(vec.buffer, vec.byteOffset, vec.byteLength);
+}
+
+function fromBlob(bytes: unknown): Float32Array {
+  const src = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes as ArrayBuffer);
+  return new Float32Array(src.buffer, src.byteOffset, Math.floor(src.byteLength / 4));
 }
 
 function fromRow(row: any): IndexDoc {
