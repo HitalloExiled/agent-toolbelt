@@ -54,7 +54,7 @@ function changeKind(line: string): string {
   return code.trim() || "changed";
 }
 
-async function compute(directory: string): Promise<string> {
+async function compute(directory: string, includeWorktree: boolean): Promise<string> {
   let root: string;
   try {
     root = (await git(["rev-parse", "--show-toplevel"], directory)).trim();
@@ -70,6 +70,18 @@ async function compute(directory: string): Promise<string> {
   const lines = status ? status.split("\n") : [];
   const branchLine = lines[0]?.startsWith("##") ? lines.shift() ?? "" : "";
   const branch = branchLine.replace(/^##\s*/, "").replace(/^No commits yet on /, "") || "detached";
+
+  // The injected system block must be stable: a live `git status` changes on
+  // every edit and invalidates the server's prefix cache from this point on,
+  // forcing a full re-prefill of the whole conversation each turn. Callers
+  // that need the working tree (the on-demand tool) still get it below.
+  if (!includeWorktree) {
+    return [
+      `repo: ${root} (branch ${branch})`,
+      last ? `last: ${last}` : "last: unknown",
+    ].join("\n");
+  }
+
   const counts = countStatus(lines);
   const detail =
     counts.total === 0
@@ -99,18 +111,19 @@ async function compute(directory: string): Promise<string> {
   ].join("\n");
 }
 
-export async function repoSnapshot(directory?: string): Promise<string> {
+export async function repoSnapshot(directory?: string, includeWorktree = true): Promise<string> {
   if (!directory) return "repo: unknown (session has no directory)";
+  const key = `${directory}\u0000${includeWorktree}`;
   const now = Date.now();
-  const hit = cache.get(directory);
+  const hit = cache.get(key);
   if (hit && now - hit.at < CACHE_MS) return hit.text;
   let text: string;
   try {
-    text = await compute(directory);
+    text = await compute(directory, includeWorktree);
   } catch (error) {
     text = `repo: ${directory} (git unavailable: ${error instanceof Error ? error.message : String(error)})`;
   }
-  cache.set(directory, { at: now, text });
+  cache.set(key, { at: now, text });
   return text;
 }
 

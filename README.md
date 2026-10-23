@@ -145,10 +145,12 @@ Carregado automaticamente como pacote local em `~/.config/opencode/plugins/toolb
    que o próprio OpenCode já produziu.
 2. **Injeta contexto no início da sessão.** No primeiro turno de uma sessão
    (e de novo se o projeto mudar), o plugin injeta um bloco
-   `<toolbelt-context>` com: o estado atual do repositório git (branch, último
-   commit, arquivos modificados/untracked) e o handoff da sessão anterior do
-   mesmo projeto (Objective/Next Move + corpo completo do último resumo). Isso
-   nunca é persistido — é recalculado a cada injeção.
+   `<toolbelt-context>` com: repositório, branch e último commit (o status do
+   working tree fica **fora** do bloco, para não invalidar o cache de prefixo
+   do servidor a cada edição — peça o estado atual sob demanda pela ferramenta
+   `toolbelt`) e o handoff da sessão anterior do mesmo projeto
+   (Objective/Next Move + corpo completo do último resumo). Isso nunca é
+   persistido — é recalculado a cada injeção.
 3. **Permite busca cross-sessão.** Um índice derivado (SQLite FTS5, com
    fallback `LIKE` e, por último, JSON) guarda apenas texto de usuário, texto
    de assistente e resumos — nunca reasoning, nunca chamadas de tool. O

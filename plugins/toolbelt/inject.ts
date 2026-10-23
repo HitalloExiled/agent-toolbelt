@@ -116,7 +116,7 @@ export async function onContext(
 
   try {
     const [repo, summaries] = await Promise.all([
-      repoSnapshot(info.location?.directory),
+      repoSnapshot(info.location?.directory, false),
       listSummaries(projectID, 20).catch(() => []),
     ]);
     // Do not re-inject the current session's own compaction: it is already in
