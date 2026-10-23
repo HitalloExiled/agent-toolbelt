@@ -8,12 +8,12 @@ import { resetService } from "../service.js";
 
 // /tmp is ephemeral in the agent environment: keep scratch state in the repo
 // (untracked) and clean it up afterwards.
-const testBase = process.env.TOOLBELT_TEST_TMP ?? join(process.cwd(), ".toolbelt-test-tmp");
+const testBase = process.env.MEMORY_TEST_TMP ?? join(process.cwd(), ".memory-test-tmp");
 
 beforeAll(async () => {
   // No live service in unit tests: the project list must degrade to empty.
   await mkdir(testBase, { recursive: true });
-  process.env.OPENCODE_SERVICE_FILE = join(await mkdtemp(join(testBase, "toolbelt-proj-")), "no-service.json");
+  process.env.OPENCODE_SERVICE_FILE = join(await mkdtemp(join(testBase, "memory-proj-")), "no-service.json");
   resetService();
   resetProjectCache();
 });

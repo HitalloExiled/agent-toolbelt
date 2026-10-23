@@ -1,5 +1,5 @@
 /**
- * agent-toolbelt plugin.
+ * memory plugin (formerly agent-toolbelt).
  *
  * - Captures every completed compaction summary as a Markdown file under XDG data.
  * - Injects the repository state and the previous session handoff once per session.
@@ -15,10 +15,10 @@ import { ensureDataDirs } from "./storage.js";
 import { registerTools } from "./tools.js";
 
 export default Plugin.define({
-  id: "agent-toolbelt",
+  id: "memory",
   async setup(ctx) {
     await ensureDataDirs().catch((error) => {
-      console.error(`[toolbelt] data directory unavailable: ${error instanceof Error ? error.message : String(error)}`);
+      console.error(`[memory] data directory unavailable: ${error instanceof Error ? error.message : String(error)}`);
     });
 
     const index = await openIndex();

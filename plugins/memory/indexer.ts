@@ -30,7 +30,7 @@ export async function indexSummaryFiles(runtime: Runtime, projectID?: string): P
     const stale = indexed.filter((docID) => docID.startsWith("summary:") && !onDisk.has(docID.slice("summary:".length)));
     if (stale.length > 0) await runtime.index.remove(stale);
   } catch (error) {
-    console.error(`[toolbelt] summary index reconciliation failed: ${error instanceof Error ? error.message : error}`);
+    console.error(`[memory] summary index reconciliation failed: ${error instanceof Error ? error.message : error}`);
   }
   if (records.length === 0) return 0;
   await runtime.index.upsert(records.map(toIndexDoc));
@@ -62,14 +62,14 @@ async function doBackfill(runtime: Runtime, projectID: string): Promise<Backfill
   try {
     summaryCount = await indexSummaryFiles(runtime, projectID);
   } catch (error) {
-    console.error(`[toolbelt] summary indexing failed: ${error instanceof Error ? error.message : String(error)}`);
+    console.error(`[memory] summary indexing failed: ${error instanceof Error ? error.message : String(error)}`);
   }
 
   let sessions: SessionInfoLike[] = [];
   try {
     sessions = await listSessions(ctx, { projectID, scope: "project", limit: backfillSessionLimit() });
   } catch (error) {
-    console.error(`[toolbelt] session list failed: ${error instanceof Error ? error.message : String(error)}`);
+    console.error(`[memory] session list failed: ${error instanceof Error ? error.message : String(error)}`);
     return { sessions: 0, messages: summaryCount, partial: true };
   }
 
@@ -89,7 +89,7 @@ async function doBackfill(runtime: Runtime, projectID: string): Promise<Backfill
     try {
       listed = await listAllMessages(ctx, session.id, { max: backfillMessageLimit(), pageSize: 100 });
     } catch (error) {
-      console.error(`[toolbelt] could not read session ${session.id}: ${error instanceof Error ? error.message : String(error)}`);
+      console.error(`[memory] could not read session ${session.id}: ${error instanceof Error ? error.message : String(error)}`);
       partial = true;
       continue;
     }
@@ -106,7 +106,7 @@ async function doBackfill(runtime: Runtime, projectID: string): Promise<Backfill
             pruned.push(...captured.pruned);
           }
         } catch (error) {
-          console.error(`[toolbelt] summary capture failed for ${message.id}: ${error instanceof Error ? error.message : String(error)}`);
+          console.error(`[memory] summary capture failed for ${message.id}: ${error instanceof Error ? error.message : String(error)}`);
         }
         continue;
       }
@@ -119,7 +119,7 @@ async function doBackfill(runtime: Runtime, projectID: string): Promise<Backfill
         await index.upsert(docs);
         indexedMessages += docs.length;
       } catch (error) {
-        console.error(`[toolbelt] index upsert failed for ${session.id}: ${error instanceof Error ? error.message : String(error)}`);
+        console.error(`[memory] index upsert failed for ${session.id}: ${error instanceof Error ? error.message : String(error)}`);
         partial = true;
         continue;
       }

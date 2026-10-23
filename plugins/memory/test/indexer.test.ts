@@ -12,14 +12,14 @@ import type { MessageLike, SessionInfoLike } from "../types.js";
 
 // /tmp is ephemeral in the agent environment: keep scratch state in the repo
 // (untracked) and clean it up afterwards.
-const testBase = process.env.TOOLBELT_TEST_TMP ?? join(process.cwd(), ".toolbelt-test-tmp");
+const testBase = process.env.MEMORY_TEST_TMP ?? join(process.cwd(), ".memory-test-tmp");
 
 let dataDir = "";
 
 beforeAll(async () => {
   await mkdir(testBase, { recursive: true });
-  dataDir = await mkdtemp(join(testBase, "toolbelt-indexer-"));
-  process.env.TOOLBELT_DATA_DIR = dataDir;
+  dataDir = await mkdtemp(join(testBase, "memory-indexer-"));
+  process.env.MEMORY_DATA_DIR = dataDir;
   // No live service in unit tests: the project list degrades to empty and
   // nothing talks to the real OpenCode server.
   process.env.OPENCODE_SERVICE_FILE = join(dataDir, "no-service.json");

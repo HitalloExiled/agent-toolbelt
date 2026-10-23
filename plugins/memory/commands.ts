@@ -15,7 +15,7 @@ const COMMANDS: Definition[] = [
     description: "List the compaction summaries stored for this project",
     prompt: (args) =>
       [
-        'Call toolbelt_summaries with action="list" for the current project.',
+        'Call memory_summaries with action="list" for the current project.',
         "Show date, session, title and objective of each summary, newest first.",
         "Do not invent entries; report exactly what the tool returns.",
         args ? `User arguments: ${args}` : "",
@@ -29,7 +29,7 @@ const COMMANDS: Definition[] = [
     prompt: (args) => {
       const [id = "latest", detail] = args.split(/\s+/).filter(Boolean);
       return [
-        `Call toolbelt_summaries with action="read", id="${id}"${
+        `Call memory_summaries with action="read", id="${id}"${
           detail ? `, detail="${detail}"` : ', detail="brief"'
         }.`,
         "Summarize the result for me and mention that full/sections detail is available.",
@@ -41,7 +41,7 @@ const COMMANDS: Definition[] = [
     description: "List recent sessions of this project",
     prompt: (args) =>
       [
-        'Call toolbelt_history with action="sessions" for the current project.',
+        'Call memory_history with action="sessions" for the current project.',
         args ? `Use query="${args.replace(/"/g, '\\"')}" to filter by title or project path.` : "",
         "Present id, date and title so I can pick one.",
       ]
@@ -54,8 +54,8 @@ const COMMANDS: Definition[] = [
     prompt: (args) => {
       const wantsRebuild = /\b(rebuild|reindex|--rebuild)\b/i.test(args);
       return wantsRebuild
-        ? 'Call toolbelt_search with action="reindex" and report the result.'
-        : 'Call toolbelt_search with action="stats" and report the result. Mention that "/index rebuild" forces a reindex and "/index-all" indexes every project.';
+        ? 'Call memory_search with action="reindex" and report the result.'
+        : 'Call memory_search with action="stats" and report the result. Mention that "/index rebuild" forces a reindex and "/index-all" indexes every project.';
     },
   },
   {
@@ -64,7 +64,7 @@ const COMMANDS: Definition[] = [
     prompt: (args) => {
       const wantsRebuild = /\b(rebuild|full|--rebuild)\b/i.test(args);
       return [
-        `Call toolbelt_search with action="index-all"${wantsRebuild ? " and rebuild=true" : ""} and report the per-project result.`,
+        `Call memory_search with action="index-all"${wantsRebuild ? " and rebuild=true" : ""} and report the per-project result.`,
         "Mention that '/index-all rebuild' forces a full rebuild instead of the incremental default.",
       ].join("\n");
     },
@@ -72,7 +72,7 @@ const COMMANDS: Definition[] = [
   {
     name: "repo",
     description: "Show the current repository state",
-    prompt: () => 'Call toolbelt_summaries with action="repo" and report the result verbatim.',
+    prompt: () => 'Call memory_summaries with action="repo" and report the result verbatim.',
   },
 ];
 

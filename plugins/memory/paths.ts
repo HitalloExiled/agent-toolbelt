@@ -5,9 +5,11 @@ import { join } from "node:path";
 import { safeFilename } from "./util.js";
 
 export function dataRoot(): string {
-  const override = process.env.TOOLBELT_DATA_DIR?.trim();
+  const override = process.env.MEMORY_DATA_DIR?.trim();
   if (override) return override;
-  return join(opencodeDataDir(), "agent-toolbelt");
+  // Shared with the notes DB ($XDG_DATA_HOME/opencode/memory/notes.db): the
+  // memory root holds all durable memory of the agent.
+  return join(opencodeDataDir(), "memory");
 }
 
 /** Default XDG data base (OpenCode's own data dir), shared with legacyDataRoot. */
@@ -17,11 +19,15 @@ function opencodeDataDir(): string {
   return join(base, "opencode");
 }
 
-/** Data root before the move into OpenCode's data dir; used for one-time migration. */
+/**
+ * Pre-rename data root (~/.local/share/opencode/agent-toolbelt); used for
+ * one-time migration. (The original root, ~/.local/share/agent-toolbelt,
+ * was already folded into it by the previous version.)
+ */
 export function legacyDataRoot(): string {
   const xdg = process.env.XDG_DATA_HOME?.trim();
   const base = xdg || join(homedir(), ".local", "share");
-  return join(base, "agent-toolbelt");
+  return join(base, "opencode", "agent-toolbelt");
 }
 
 export function compactionsRoot(): string {
@@ -41,26 +47,26 @@ export function jsonIndexPath(): string {
 }
 
 export function summaryKeep(): number {
-  const value = Number(process.env.TOOLBELT_SUMMARY_KEEP ?? "20");
+  const value = Number(process.env.MEMORY_SUMMARY_KEEP ?? "20");
   return Number.isFinite(value) && value > 0 ? Math.floor(value) : 20;
 }
 
 export function injectMax(): number {
-  const value = Number(process.env.TOOLBELT_INJECT_MAX ?? "6000");
+  const value = Number(process.env.MEMORY_INJECT_MAX ?? "6000");
   return Number.isFinite(value) && value > 1000 ? Math.floor(value) : 6000;
 }
 
 export function indexTextMax(): number {
-  const value = Number(process.env.TOOLBELT_INDEX_TEXT_MAX ?? "16000");
+  const value = Number(process.env.MEMORY_INDEX_TEXT_MAX ?? "16000");
   return Number.isFinite(value) && value > 1000 ? Math.floor(value) : 16000;
 }
 
 export function backfillSessionLimit(): number {
-  const value = Number(process.env.TOOLBELT_BACKFILL_SESSIONS ?? "100");
+  const value = Number(process.env.MEMORY_BACKFILL_SESSIONS ?? "100");
   return Number.isFinite(value) && value > 0 ? Math.floor(value) : 100;
 }
 
 export function backfillMessageLimit(): number {
-  const value = Number(process.env.TOOLBELT_BACKFILL_MESSAGES ?? "4000");
+  const value = Number(process.env.MEMORY_BACKFILL_MESSAGES ?? "4000");
   return Number.isFinite(value) && value > 0 ? Math.floor(value) : 4000;
 }

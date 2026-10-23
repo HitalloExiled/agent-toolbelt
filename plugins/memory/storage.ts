@@ -20,33 +20,37 @@ export async function ensureDataDirs(): Promise<void> {
 }
 
 /**
- * One-time move of data from the pre-migration root
- * (~/.local/share/agent-toolbelt) into OpenCode's data dir
- * (~/.local/share/opencode/agent-toolbelt). Skips when an explicit
- * TOOLBELT_DATA_DIR override is set or when the new root already has data.
+ * One-time move of data from the pre-rename root
+ * (~/.local/share/opencode/agent-toolbelt) into the memory root
+ * (~/.local/share/opencode/memory). The memory root already holds the notes
+ * DB, so "already has data" means the plugin's own markers (index.db or
+ * compactions/), not the directory itself. Skips when an explicit
+ * MEMORY_DATA_DIR override is set.
  */
 async function migrateLegacyDataDir(): Promise<void> {
-  if (process.env.TOOLBELT_DATA_DIR?.trim()) return;
+  if (process.env.MEMORY_DATA_DIR?.trim()) return;
   const from = legacyDataRoot();
   const to = dataRoot();
   if (from === to) return;
-  if (await fileExists(to)) return; // new root already in use: never touch it
-  try {
-    await stat(from);
-  } catch {
-    return; // nothing to migrate
-  }
+  if (await hasPluginData(to)) return; // new root already in use: never touch it
+  if (!(await hasPluginData(from))) return; // nothing to migrate
   try {
     await rename(from, to);
   } catch {
-    // Rename fails when the old dir sits on a read-only mount; copy instead.
+    // Rename fails when the new root already exists (notes.db) or the old
+    // dir sits on a read-only mount; merge instead.
     try {
       await cp(from, to, { recursive: true });
       await rm(from, { recursive: true, force: true }).catch(() => undefined);
     } catch (error) {
-      console.error(`[toolbelt] could not migrate data from ${from}: ${error instanceof Error ? error.message : String(error)}`);
+      console.error(`[memory] could not migrate data from ${from}: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
+}
+
+/** The plugin's own marker files (the notes DB also lives in the new root). */
+async function hasPluginData(dir: string): Promise<boolean> {
+  return (await fileExists(join(dir, "index.db"))) || (await fileExists(join(dir, "compactions")));
 }
 
 export async function atomicWrite(path: string, content: string, mode = 0o600): Promise<void> {

@@ -21,17 +21,17 @@ let dataDir = "";
 
 // /tmp is ephemeral in the agent environment: keep scratch state in the repo
 // (untracked) and clean it up afterwards.
-const testBase = process.env.TOOLBELT_TEST_TMP ?? join(process.cwd(), ".toolbelt-test-tmp");
+const testBase = process.env.MEMORY_TEST_TMP ?? join(process.cwd(), ".memory-test-tmp");
 
 beforeAll(async () => {
   await mkdir(testBase, { recursive: true });
-  dataDir = await mkdtemp(join(testBase, "toolbelt-summaries-"));
-  process.env.TOOLBELT_DATA_DIR = dataDir;
-  process.env.TOOLBELT_SUMMARY_KEEP = "20";
+  dataDir = await mkdtemp(join(testBase, "memory-summaries-"));
+  process.env.MEMORY_DATA_DIR = dataDir;
+  process.env.MEMORY_SUMMARY_KEEP = "20";
 });
 
 afterAll(async () => {
-  delete process.env.TOOLBELT_SUMMARY_KEEP;
+  delete process.env.MEMORY_SUMMARY_KEEP;
   await rm(dataDir, { recursive: true, force: true });
   await rm(testBase, { recursive: true, force: true }).catch(() => undefined);
 });
@@ -93,7 +93,7 @@ describe("pruneSummaries", () => {
       await captureCompaction("pPrune", session, compaction(`msg_prune_${i}`, 1760000100000 + i * 1000, BODY));
     }
     // ...then tighten the keep and prune (write path only).
-    process.env.TOOLBELT_SUMMARY_KEEP = "3";
+    process.env.MEMORY_SUMMARY_KEEP = "3";
     try {
       const removed = await pruneSummaries("pPrune");
       expect(removed.sort()).toEqual(["msg_prune_0", "msg_prune_1"]);
@@ -105,7 +105,7 @@ describe("pruneSummaries", () => {
       const files = await readdir(join(compactionsRoot(), "pPrune"));
       expect(files).toHaveLength(3);
     } finally {
-      process.env.TOOLBELT_SUMMARY_KEEP = "20";
+      process.env.MEMORY_SUMMARY_KEEP = "20";
     }
   });
 });

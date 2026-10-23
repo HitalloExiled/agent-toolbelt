@@ -89,9 +89,13 @@ link() { # link <origem> <destino>; tolera destino em filesystem read-only
   say "  link:   $dst -> $src"
 }
 
-ensure_toolbelt_plugin() {
+ensure_memory_plugin() {
   mkdir -p "$CONFIG_DIR/plugins" 2>/dev/null || true
-  link "$ROOT/plugins/toolbelt" "$CONFIG_DIR/plugins/toolbelt" || true
+  # Renamed from 'toolbelt': drop the old link if it still points into the repo.
+  case "$(readlink "$CONFIG_DIR/plugins/toolbelt" 2>/dev/null || true)" in
+    "$ROOT"/plugins/*) rm -f "$CONFIG_DIR/plugins/toolbelt" 2>/dev/null && say "  legado: plugins/toolbelt removido (renomeado para memory)" ;;
+  esac
+  link "$ROOT/plugins/memory" "$CONFIG_DIR/plugins/memory" || true
 }
 
 unlink_ours() { # remove symlink apenas se apontar para dentro do repo
@@ -352,10 +356,10 @@ cmd_check() {
   for f in "$CONFIG_DIR/tools/notes.ts" "$CONFIG_DIR/tools/sandbox.ts"; do
     if [ -e "$f" ]; then say "  tool    : $f"; else say "  tool    : (ausente) $f"; failed=1; fi
   done
-  if [ -e "$CONFIG_DIR/plugins/toolbelt" ]; then
-    say "  plugin  : $CONFIG_DIR/plugins/toolbelt"
+  if [ -e "$CONFIG_DIR/plugins/memory" ]; then
+    say "  plugin  : $CONFIG_DIR/plugins/memory"
   else
-    say "  plugin  : (ausente) $CONFIG_DIR/plugins/toolbelt"; failed=1
+    say "  plugin  : (ausente) $CONFIG_DIR/plugins/memory"; failed=1
   fi
   say "  banco   : $NEW_DB"
 
@@ -416,10 +420,11 @@ cmd_remove() {
   for name in opencode-sandboxed opencode-sb; do
     unlink_ours "$BIN_DIR/$name"
   done
-  unlink_ours "$CONFIG_DIR/plugins/toolbelt"
+  unlink_ours "$CONFIG_DIR/plugins/memory"
+  unlink_ours "$CONFIG_DIR/plugins/toolbelt"   # nome antigo
   say ""
   say "banco preservado em: $NEW_DB"
-  say "resumos/indice preservados em: \${XDG_DATA_HOME:-~/.local/share}/opencode/agent-toolbelt"
+  say "resumos/indice preservados em: \${XDG_DATA_HOME:-~/.local/share}/opencode/memory"
   say "sandbox: imagens/rede/guard ficam; para remover o guard (root):"
   say "  sudo $ROOT/sandbox/host-firewall.sh uninstall-unit"
   exit 0
@@ -468,8 +473,8 @@ cmd_setup() {
     link "$t" "$CONFIG_DIR/tools/$(basename "$t")" || true
   done
 
-  step "5/7 plugin agent-toolbelt (resumos, busca, contexto)"
-  ensure_toolbelt_plugin
+  step "5/7 plugin memory (resumos, busca, contexto)"
+  ensure_memory_plugin
 
   local sandbox_failed=0
   if [ "$SANDBOX" = 1 ]; then

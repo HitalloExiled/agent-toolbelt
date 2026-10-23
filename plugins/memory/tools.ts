@@ -68,7 +68,7 @@ async function currentProject(ctx: PluginContext, sessionID: string) {
 export async function registerTools(ctx: PluginContext, runtime: Runtime) {
   return ctx.tool.transform((editor) => {
     editor.add({
-      name: "toolbelt_search",
+      name: "memory_search",
       description: [
         "Search past conversations and compaction summaries across sessions of this project.",
         "The index holds only user text, assistant text and compaction summaries (never reasoning or tool payloads).",
@@ -189,13 +189,13 @@ export async function registerTools(ctx: PluginContext, runtime: Runtime) {
         return {
           content:
             `${hits.length} match(es) for "${query}" (scope: ${scope}).\n\n${lines.join("\n")}` +
-            `\n\nRead more with toolbelt_summaries (summaries) or toolbelt_history (full messages).${partialNote}`,
+            `\n\nRead more with memory_summaries (summaries) or memory_history (full messages).${partialNote}`,
         };
       },
     });
 
     editor.add({
-      name: "toolbelt_summaries",
+      name: "memory_summaries",
       description: [
         "Read compaction summaries stored for this project, plus the current repository state.",
         "Actions: list, search, read (detail brief|full|sections), repo.",
@@ -269,7 +269,7 @@ export async function registerTools(ctx: PluginContext, runtime: Runtime) {
     });
 
     editor.add({
-      name: "toolbelt_history",
+      name: "memory_history",
       description: [
         "Inspect the full message timeline of a session: list sessions, read a page, search inside it, or fetch one message.",
         "action=search returns only a window around the occurrences (context=window width, windows=clusters per message), never the full message — prefer it over action=read to inspect a long conversation.",

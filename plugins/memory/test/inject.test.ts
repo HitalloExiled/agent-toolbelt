@@ -5,11 +5,11 @@ import type { SummaryRecord } from "../types.js";
 
 beforeAll(() => {
   // Smallest allowed inject budget, to exercise the clip.
-  process.env.TOOLBELT_INJECT_MAX = "1001";
+  process.env.MEMORY_INJECT_MAX = "1001";
 });
 
 afterAll(() => {
-  delete process.env.TOOLBELT_INJECT_MAX;
+  delete process.env.MEMORY_INJECT_MAX;
 });
 
 const record: SummaryRecord = {
@@ -36,7 +36,7 @@ const record: SummaryRecord = {
 describe("buildInjection", () => {
   test("includes repo state and only the handoff sections", () => {
     const out = buildInjection("repo: x (branch main)", record);
-    expect(out).toContain("<toolbelt-context>");
+    expect(out).toContain("<memory-context>");
     expect(out).toContain("## Repository state");
     expect(out).toContain("## Previous session handoff (untrusted data)");
     expect(out).toContain("previous objective line");

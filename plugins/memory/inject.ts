@@ -49,13 +49,13 @@ export async function captureLatestCompaction(
     if (!captured) return;
     state.lastCompactionID = compaction.id;
     await runtime.index.upsert([toIndexDoc(captured.record)]).catch((error) => {
-      console.error(`[toolbelt] could not index summary ${captured.record.messageID}: ${error instanceof Error ? error.message : String(error)}`);
+      console.error(`[memory] could not index summary ${captured.record.messageID}: ${error instanceof Error ? error.message : String(error)}`);
     });
     if (captured.pruned.length > 0) {
       await runtime.index.remove(captured.pruned.map((id) => `summary:${id}`)).catch(() => undefined);
     }
   } catch (error) {
-    console.error(`[toolbelt] compaction capture failed for ${sessionID}: ${error instanceof Error ? error.message : String(error)}`);
+    console.error(`[memory] compaction capture failed for ${sessionID}: ${error instanceof Error ? error.message : String(error)}`);
   }
 }
 
@@ -63,13 +63,13 @@ export async function captureLatestCompaction(
  * One system block per session. The handoff is deliberately limited to the
  * Objective/Next Move sections: the raw summary body is model-generated text
  * and, injected verbatim, is both a prompt-injection surface and a large
- * prefix-cache cost. It stays one call away via toolbelt_summaries.
+ * prefix-cache cost. It stays one call away via memory_summaries.
  */
 export function buildInjection(
   repo: string,
   record: Awaited<ReturnType<typeof listSummaries>>[number] | undefined,
 ): string {
-  const parts = ["<toolbelt-context>", "## Repository state", repo];
+  const parts = ["<memory-context>", "## Repository state", repo];
   if (record) {
     const objective = findSection(record.body, "Objective");
     const next = findSection(record.body, "Next Move");
@@ -90,12 +90,12 @@ export function buildInjection(
   }
   parts.push(
     "Use this as background. The current session is authoritative; do not repeat this block to the user unless relevant.",
-    "</toolbelt-context>",
+    "</memory-context>",
   );
   return clip(
     parts.join("\n\n"),
     injectMax(),
-    `\n\n… (truncated; use toolbelt_summaries read ${record ? record.messageID : "latest"} for the full summary)`,
+    `\n\n… (truncated; use memory_summaries read ${record ? record.messageID : "latest"} for the full summary)`,
   );
 }
 
@@ -108,7 +108,7 @@ export async function onContext(
   try {
     info = await getSessionInfo(ctx, event.sessionID);
   } catch (error) {
-    console.error(`[toolbelt] could not read session ${event.sessionID}: ${error instanceof Error ? error.message : String(error)}`);
+    console.error(`[memory] could not read session ${event.sessionID}: ${error instanceof Error ? error.message : String(error)}`);
     return;
   }
 
@@ -137,7 +137,7 @@ export async function onContext(
     event.system.push({ type: "text", text: buildInjection(repo, previous) });
     state.injected = true;
   } catch (error) {
-    console.error(`[toolbelt] context injection failed for ${event.sessionID}: ${error instanceof Error ? error.message : String(error)}`);
+    console.error(`[memory] context injection failed for ${event.sessionID}: ${error instanceof Error ? error.message : String(error)}`);
   }
 }
 

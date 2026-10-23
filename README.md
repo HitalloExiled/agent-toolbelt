@@ -9,9 +9,9 @@ Três subsistemas:
   CLI global `notes` e como as tools `notes_*`.
 - **`sandbox`** — delegação de trabalho com risco para um container Docker
   descartável, via as tools `sandbox_*` e o CLI `opencode-sb`.
-- **`agent-toolbelt` (plugin)** — captura resumos de compactação, injeta o
+- **`memory` (plugin)** — captura resumos de compactação, injeta o
   estado do repo e o handoff da sessão anterior, e permite busca cross-sessão
-  em resumos e conversas passadas. Veja [Plugin: agent-toolbelt](#plugin-agent-toolbelt).
+  em resumos e conversas passadas. Veja [Plugin: memory](#plugin-memory).
 
 O conteúdo (`tools/`, `skills/`, `memory/`, `sandbox/`, `plugins/`) é genérico;
 o acoplamento com o OpenCode vive só no `setup.sh`. Trocar de harness =
@@ -31,7 +31,7 @@ agent-toolbelt/
 │   ├── notes.ts
 │   └── sandbox.ts
 ├── plugins/
-│   └── toolbelt/        # plugin OpenCode V2: resumos, injeção de contexto, busca
+│   └── memory/          # plugin OpenCode V2: resumos, injeção de contexto, busca
 ├── sandbox/
 │   ├── setup.sh        # expõe opencode-sb/opencode-sandboxed no PATH
 │   ├── run.sh          # orquestrador (task/steer/watch/peek/status/up/down/…)
@@ -65,7 +65,7 @@ O que o `setup.sh` faz, em ordem:
 | memória | symlink `~/.local/bin/notes` → `memory/notes.py`; migra o banco legado, se existir |
 | skills | symlink `skills/<id>/SKILL.md` → `~/.config/opencode/skills/<id>/SKILL.md` |
 | tools | symlink `tools/*.ts` → `~/.config/opencode/tools/` |
-| plugin `agent-toolbelt` | symlink `plugins/toolbelt/` → `~/.config/opencode/plugins/toolbelt` (resumos, injeção de contexto, busca) |
+| plugin `memory` | symlink `plugins/memory/` → `~/.config/opencode/plugins/memory` (resumos, injeção de contexto, busca) |
 | sandbox | daemon docker → CLI `opencode-sb` → guard de firewall → imagens/rede → self-test → tarefa de fumaça |
 | verificação | `notes init`, `notes doctor`, estado do sandbox, PATH |
 
@@ -132,10 +132,11 @@ Se quiser uma allow-list de skills no config do OpenCode:
 ]
 ```
 
-## Plugin: agent-toolbelt
+## Plugin: memory
 
-Plugin único (`plugins/toolbelt/`, id `agent-toolbelt`) para o OpenCode V2.
-Carregado automaticamente como pacote local em `~/.config/opencode/plugins/toolbelt`
+Plugin único (`plugins/memory/`, id `memory`; antes `agent-toolbelt`) para o
+OpenCode V2.
+Carregado automaticamente como pacote local em `~/.config/opencode/plugins/memory`
 (link criado pelo `setup.sh`). Três funções:
 
 1. **Captura resumos de compactação.** Toda vez que uma sessão é compactada, o
@@ -145,12 +146,13 @@ Carregado automaticamente como pacote local em `~/.config/opencode/plugins/toolb
    que o próprio OpenCode já produziu.
 2. **Injeta contexto no início da sessão.** No primeiro turno de uma sessão
    (e de novo se o projeto mudar), o plugin injeta um bloco
-   `<toolbelt-context>` com: repositório, branch e último commit (o status do
+   `<memory-context>` com: repositório, branch e último commit (o status do
    working tree fica **fora** do bloco, para não invalidar o cache de prefixo
    do servidor a cada edição — peça o estado atual sob demanda pela ferramenta
-   `toolbelt`) e o handoff da sessão anterior do mesmo projeto — apenas as
+   `memory_summaries` com `action=repo`) e o handoff da sessão anterior do
+   mesmo projeto — apenas as
    seções Objective/Next Move, marcadas como *dados não confiáveis* (o corpo
-   completo do resumo nunca entra no system prompt; use `toolbelt_summaries`
+   completo do resumo nunca entra no system prompt; use `memory_summaries`
    para ler). Isso nunca é persistido — é recalculado a cada injeção.
 3. **Permite busca cross-sessão.** Um índice derivado (SQLite FTS5, com
    fallback `LIKE` e, por último, JSON) guarda apenas texto de usuário, texto
@@ -163,17 +165,19 @@ Carregado automaticamente como pacote local em `~/.config/opencode/plugins/toolb
 ### Onde os dados ficam
 
 ```
-$XDG_DATA_HOME/opencode/agent-toolbelt/
+$XDG_DATA_HOME/opencode/memory/
 ├── compactions/<projectID>/<timestampUTC>-<messageID>.md   # resumos, um por compactação
 ├── index.db          # índice FTS5 derivado (ou index.json sem SQLite)
 ```
 
 O diretório vive dentro da data dir do próprio OpenCode
 (`~/.local/share/opencode/`) para ficar no mesmo volume gravável — em
-ambientes onde a raiz XDG é read-only, o caminho antigo
-(`$XDG_DATA_HOME/agent-toolbelt`) não aceita escrita. Dados criados antes da
-mudação são migrados uma única vez pelo plugin ao iniciar (rename, ou cópia
-quando o diretório antigo é somente leitura).
+ambientes onde a raiz XDG é read-only, os caminhos antigos
+(`$XDG_DATA_HOME/agent-toolbelt` e `$XDG_DATA_HOME/opencode/agent-toolbelt`)
+não aceitam escrita. Dados criados antes do renome são migrados uma única vez
+pelo plugin ao iniciar (rename, ou cópia quando o diretório antigo é somente
+leitura). O diretório é compartilhado com o banco do CLI `notes`
+(`notes.db`) — tudo que é memória durável do agente mora aqui.
 
 `projectID` é o identificador de projeto do próprio OpenCode
 (`session.projectID`); sessões sem projeto caem em `global`. Nada é
@@ -183,9 +187,9 @@ versionado no repo nem escrito dentro dele.
 
 | Tool | Para quê |
 |---|---|
-| `toolbelt_summaries` | listar/buscar/ler resumos de compactação (`detail=brief\|full\|sections`) + estado do repo (`action=repo`) |
-| `toolbelt_search` | buscar no índice derivado (resumos + texto de usuário/assistente); `scope=project\|all`; `action=index-all` indexa todos os projetos manualmente (`rebuild=true` para rebuild completo) |
-| `toolbelt_history` | inspecionar a timeline completa de uma sessão (listar sessões, ler página, buscar, buscar uma mensagem); tool calls e reasoning só entram com `includeTools`/`includeReasoning` explícitos; sessões de outro projeto exigem `scope=all` |
+| `memory_summaries` | listar/buscar/ler resumos de compactação (`detail=brief\|full\|sections`) + estado do repo (`action=repo`) |
+| `memory_search` | buscar no índice derivado (resumos + texto de usuário/assistente); `scope=project\|all`; `action=index-all` indexa todos os projetos manualmente (`rebuild=true` para rebuild completo) |
+| `memory_history` | inspecionar a timeline completa de uma sessão (listar sessões, ler página, buscar, buscar uma mensagem); tool calls e reasoning só entram com `includeTools`/`includeReasoning` explícitos; sessões de outro projeto exigem `scope=all` |
 
 ### Comandos
 
@@ -198,25 +202,27 @@ git). Cada um é um atalho que chama as tools acima.
 
 | Variável | Efeito | Default |
 |---|---|---|
-| `TOOLBELT_DATA_DIR` | raiz de dados do plugin (sobrepõe XDG) | `$XDG_DATA_HOME/opencode/agent-toolbelt` |
-| `TOOLBELT_SUMMARY_KEEP` | quantos resumos manter por projeto (os mais antigos são podados, do disco e do índice, quando um novo resumo é capturado — nunca na path de leitura) | `20` |
-| `TOOLBELT_INJECT_MAX` | teto de bytes do bloco `<toolbelt-context>` injetado | `~6 KB` |
-| `TOOLBELT_INDEX_TEXT_MAX` | teto de caracteres de texto indexado por documento | — |
-| `TOOLBELT_BACKFILL_SESSIONS` | teto de sessões processadas por backfill | — |
-| `TOOLBELT_BACKFILL_MESSAGES` | teto de mensagens processadas por sessão no backfill | — |
+| `MEMORY_DATA_DIR` | raiz de dados do plugin (sobrepõe XDG) | `$XDG_DATA_HOME/opencode/memory` |
+| `MEMORY_SUMMARY_KEEP` | quantos resumos manter por projeto (os mais antigos são podados, do disco e do índice, quando um novo resumo é capturado — nunca na path de leitura) | `20` |
+| `MEMORY_INJECT_MAX` | teto de bytes do bloco `<memory-context>` injetado | `~6 KB` |
+| `MEMORY_INDEX_TEXT_MAX` | teto de caracteres de texto indexado por documento | — |
+| `MEMORY_BACKFILL_SESSIONS` | teto de sessões processadas por backfill | — |
+| `MEMORY_BACKFILL_MESSAGES` | teto de mensagens processadas por sessão no backfill | — |
 
 ### Privacidade e remoção
 
-Tudo fica fora do repo, em `$XDG_DATA_HOME/opencode/agent-toolbelt/`
+Tudo fica fora do repo, em `$XDG_DATA_HOME/opencode/memory/`
 (permissões `0700`/`0600`). `./setup.sh --remove` remove só o symlink do
-plugin — nunca apaga resumos nem o índice. Para apagar os dados de fato:
+plugin — nunca apaga resumos nem o índice. Para apagar os dados **do plugin**
+de fato (o `notes.db` é do CLI `notes` e fica fora desta limpeza):
 
 ```bash
-rm -rf "${XDG_DATA_HOME:-$HOME/.local/share}/opencode/agent-toolbelt"
+rm -rf "${XDG_DATA_HOME:-$HOME/.local/share}/opencode/memory/compactions" \
+       "${XDG_DATA_HOME:-$HOME/.local/share}/opencode/memory"/index.db*
 ```
 
 Para desativar sem remover nada, apague o link
-`~/.config/opencode/plugins/toolbelt` (ou rode `./setup.sh --remove`) e
+`~/.config/opencode/plugins/memory` (ou rode `./setup.sh --remove`) e
 reinicie o OpenCode.
 
 ## Desenvolvimento
@@ -224,7 +230,7 @@ reinicie o OpenCode.
 ```bash
 npm install        # devDeps: typescript, @types/node, @opencode-ai/plugin, @opencode/plugin, @opencode/client, @opencode/schema
 npm run typecheck
-npm test           # suite do plugin (bun test, plugins/toolbelt/test)
+npm test           # suite do plugin (bun test, plugins/memory/test)
 ```
 
 Smoke do CLI sem configurar a máquina:

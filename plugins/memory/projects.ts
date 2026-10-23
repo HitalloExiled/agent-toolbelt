@@ -3,7 +3,7 @@
  *
  * OpenCode assigns sessions to a project, but in this build sessions inside
  * a real project's directory can carry the root project id `global` instead.
- * The toolbelt operates per project, so every session is resolved to the
+ * The memory plugin operates per project, so every session is resolved to the
  * innermost project whose canonical path contains its directory.
  *
  * The plugin context has no project domain, so the list comes from the local
@@ -71,7 +71,7 @@ export function projectForDirectory(
 }
 
 /**
- * The project a session belongs to for toolbelt purposes. Explicit
+ * The project a session belongs to for the memory plugin. Explicit
  * associations win; sessions left at `global` (or without a project) are
  * re-homed by their directory.
  */

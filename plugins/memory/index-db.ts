@@ -18,7 +18,7 @@ export interface SearchOptions {
   limit: number;
 }
 
-export interface ToolbeltIndex {
+export interface MemoryIndex {
   readonly backend: "sqlite-fts5" | "sqlite-like" | "json";
   readonly error?: string;
   upsert(docs: IndexDoc[]): Promise<void>;
@@ -48,7 +48,7 @@ function hitFrom(doc: IndexDoc, rank: number, terms: string[]): SearchHit {
   return { ...doc, rank, snippet: snippet(doc.text, terms) };
 }
 
-class SqliteIndex implements ToolbeltIndex {
+class SqliteIndex implements MemoryIndex {
   readonly backend: "sqlite-fts5" | "sqlite-like";
   readonly error?: string;
   private readonly db: any;
@@ -86,7 +86,7 @@ class SqliteIndex implements ToolbeltIndex {
     } catch (error) {
       this.fts = false;
       this.error = `FTS5 unavailable; using LIKE (${error instanceof Error ? error.message : String(error)})`;
-      console.error(`[toolbelt] ${this.error}`);
+      console.error(`[memory] ${this.error}`);
     }
     this.backend = this.fts ? "sqlite-fts5" : "sqlite-like";
   }
@@ -186,7 +186,7 @@ class SqliteIndex implements ToolbeltIndex {
         .all(...params) as any[];
       return rows.map((row) => hitFrom(fromRow(row), Number(row.rank ?? 0), terms));
     } catch (error) {
-      console.error(`[toolbelt] FTS query failed, falling back to LIKE: ${error instanceof Error ? error.message : String(error)}`);
+      console.error(`[memory] FTS query failed, falling back to LIKE: ${error instanceof Error ? error.message : String(error)}`);
       return this.likeSearch(terms, options);
     }
   }
@@ -272,7 +272,7 @@ interface JsonState {
   sessions: Record<string, IndexState>;
 }
 
-export class JsonIndex implements ToolbeltIndex {
+export class JsonIndex implements MemoryIndex {
   readonly backend = "json" as const;
   error: string;
   private readonly path: string;
@@ -417,7 +417,7 @@ function fromRow(row: any): IndexDoc {
   };
 }
 
-export async function openIndex(): Promise<ToolbeltIndex> {
+export async function openIndex(): Promise<MemoryIndex> {
   await ensureDataDirs();
   let sqliteError = "";
   try {
@@ -433,13 +433,13 @@ export async function openIndex(): Promise<ToolbeltIndex> {
     sqliteError = error instanceof Error ? error.message : String(error);
   }
   const error = `SQLite unavailable; using JSON fallback (${sqliteError || "unknown error"})`;
-  console.error(`[toolbelt] ${error}`);
+  console.error(`[memory] ${error}`);
   return JsonIndex.open(jsonIndexPath(), error);
 }
 
-async function openSqlite(Database: any): Promise<ToolbeltIndex> {
+async function openSqlite(Database: any): Promise<MemoryIndex> {
   const path = indexPath();
-  let index: ToolbeltIndex | undefined;
+  let index: MemoryIndex | undefined;
   try {
     index = new SqliteIndex(Database, path);
     await index.count(); // probe: an image can open yet fail to read
@@ -451,7 +451,7 @@ async function openSqlite(Database: any): Promise<ToolbeltIndex> {
     if (index) await index.close().catch(() => undefined);
     const quarantine = `${path}.corrupt-${Date.now()}`;
     await rename(path, quarantine).catch(() => undefined);
-    console.error(`[toolbelt] index unreadable (${reason}); quarantined to ${quarantine}`);
+    console.error(`[memory] index unreadable (${reason}); quarantined to ${quarantine}`);
     return new SqliteIndex(Database, path);
   }
 }

@@ -1,4 +1,4 @@
-/** Shared, deliberately small structural types for the toolbelt plugin. */
+/** Shared, deliberately small structural types for the memory plugin. */
 
 export type MessageKind = "user" | "assistant" | "summary";
 

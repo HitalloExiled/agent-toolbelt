@@ -3,19 +3,19 @@ import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 
 import { JsonIndex, openIndex } from "../index-db.js";
-import type { ToolbeltIndex } from "../index-db.js";
+import type { MemoryIndex } from "../index-db.js";
 import type { IndexDoc, MessageKind } from "../types.js";
 
 // /tmp is ephemeral in the agent environment: keep scratch state in the repo
 // (untracked) and clean it up afterwards.
-const testBase = process.env.TOOLBELT_TEST_TMP ?? join(process.cwd(), ".toolbelt-test-tmp");
+const testBase = process.env.MEMORY_TEST_TMP ?? join(process.cwd(), ".memory-test-tmp");
 
 let dataDir = "";
 
 beforeAll(async () => {
   await mkdir(testBase, { recursive: true });
-  dataDir = await mkdtemp(join(testBase, "toolbelt-index-"));
-  process.env.TOOLBELT_DATA_DIR = dataDir;
+  dataDir = await mkdtemp(join(testBase, "memory-index-"));
+  process.env.MEMORY_DATA_DIR = dataDir;
 });
 
 afterAll(async () => {
@@ -30,7 +30,7 @@ const docs: IndexDoc[] = [
 ];
 
 const ids = (hits: Array<{ id: string }>) => hits.map((hit) => hit.id);
-const searchAll = (index: ToolbeltIndex, query: string, kind: MessageKind | "any") =>
+const searchAll = (index: MemoryIndex, query: string, kind: MessageKind | "any") =>
   index.search(query, { scope: "all", kind, limit: 10 });
 
 describe("SqliteIndex", () => {
