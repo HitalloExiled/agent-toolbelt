@@ -1,8 +1,8 @@
 /** Atomic, private storage helpers. */
 
-import { chmod, mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, cp, mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { compactionsRoot, dataRoot } from "./paths.js";
+import { compactionsRoot, dataRoot, legacyDataRoot } from "./paths.js";
 
 export interface Frontmatter {
   [key: string]: string | number | boolean | null;
@@ -14,8 +14,39 @@ export async function ensurePrivateDir(path: string): Promise<void> {
 }
 
 export async function ensureDataDirs(): Promise<void> {
+  await migrateLegacyDataDir();
   await ensurePrivateDir(dataRoot());
   await ensurePrivateDir(compactionsRoot());
+}
+
+/**
+ * One-time move of data from the pre-migration root
+ * (~/.local/share/agent-toolbelt) into OpenCode's data dir
+ * (~/.local/share/opencode/agent-toolbelt). Skips when an explicit
+ * TOOLBELT_DATA_DIR override is set or when the new root already has data.
+ */
+async function migrateLegacyDataDir(): Promise<void> {
+  if (process.env.TOOLBELT_DATA_DIR?.trim()) return;
+  const from = legacyDataRoot();
+  const to = dataRoot();
+  if (from === to) return;
+  if (await fileExists(to)) return; // new root already in use: never touch it
+  try {
+    await stat(from);
+  } catch {
+    return; // nothing to migrate
+  }
+  try {
+    await rename(from, to);
+  } catch {
+    // Rename fails when the old dir sits on a read-only mount; copy instead.
+    try {
+      await cp(from, to, { recursive: true });
+      await rm(from, { recursive: true, force: true }).catch(() => undefined);
+    } catch (error) {
+      console.error(`[toolbelt] could not migrate data from ${from}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
 }
 
 export async function atomicWrite(path: string, content: string, mode = 0o600): Promise<void> {

@@ -419,7 +419,7 @@ cmd_remove() {
   unlink_ours "$CONFIG_DIR/plugins/toolbelt"
   say ""
   say "banco preservado em: $NEW_DB"
-  say "resumos/indice preservados em: \${XDG_DATA_HOME:-~/.local/share}/agent-toolbelt"
+  say "resumos/indice preservados em: \${XDG_DATA_HOME:-~/.local/share}/opencode/agent-toolbelt"
   say "sandbox: imagens/rede/guard ficam; para remover o guard (root):"
   say "  sudo $ROOT/sandbox/host-firewall.sh uninstall-unit"
   exit 0

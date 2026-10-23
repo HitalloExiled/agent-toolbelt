@@ -163,10 +163,17 @@ Carregado automaticamente como pacote local em `~/.config/opencode/plugins/toolb
 ### Onde os dados ficam
 
 ```
-$XDG_DATA_HOME/agent-toolbelt/
+$XDG_DATA_HOME/opencode/agent-toolbelt/
 ├── compactions/<projectID>/<timestampUTC>-<messageID>.md   # resumos, um por compactação
 ├── index.db          # índice FTS5 derivado (ou index.json sem SQLite)
 ```
+
+O diretório vive dentro da data dir do próprio OpenCode
+(`~/.local/share/opencode/`) para ficar no mesmo volume gravável — em
+ambientes onde a raiz XDG é read-only, o caminho antigo
+(`$XDG_DATA_HOME/agent-toolbelt`) não aceita escrita. Dados criados antes da
+mudação são migrados uma única vez pelo plugin ao iniciar (rename, ou cópia
+quando o diretório antigo é somente leitura).
 
 `projectID` é o identificador de projeto do próprio OpenCode
 (`session.projectID`); sessões sem projeto caem em `global`. Nada é
@@ -191,7 +198,7 @@ git). Cada um é um atalho que chama as tools acima.
 
 | Variável | Efeito | Default |
 |---|---|---|
-| `TOOLBELT_DATA_DIR` | raiz de dados do plugin (sobrepõe XDG) | `$XDG_DATA_HOME/agent-toolbelt` |
+| `TOOLBELT_DATA_DIR` | raiz de dados do plugin (sobrepõe XDG) | `$XDG_DATA_HOME/opencode/agent-toolbelt` |
 | `TOOLBELT_SUMMARY_KEEP` | quantos resumos manter por projeto (os mais antigos são podados, do disco e do índice, quando um novo resumo é capturado — nunca na path de leitura) | `20` |
 | `TOOLBELT_INJECT_MAX` | teto de bytes do bloco `<toolbelt-context>` injetado | `~6 KB` |
 | `TOOLBELT_INDEX_TEXT_MAX` | teto de caracteres de texto indexado por documento | — |
@@ -200,12 +207,12 @@ git). Cada um é um atalho que chama as tools acima.
 
 ### Privacidade e remoção
 
-Tudo fica fora do repo, em `$XDG_DATA_HOME/agent-toolbelt/` (permissões
-`0700`/`0600`). `./setup.sh --remove` remove só o symlink do plugin — nunca
-apaga resumos nem o índice. Para apagar os dados de fato:
+Tudo fica fora do repo, em `$XDG_DATA_HOME/opencode/agent-toolbelt/`
+(permissões `0700`/`0600`). `./setup.sh --remove` remove só o symlink do
+plugin — nunca apaga resumos nem o índice. Para apagar os dados de fato:
 
 ```bash
-rm -rf "${XDG_DATA_HOME:-$HOME/.local/share}/agent-toolbelt"
+rm -rf "${XDG_DATA_HOME:-$HOME/.local/share}/opencode/agent-toolbelt"
 ```
 
 Para desativar sem remover nada, apague o link

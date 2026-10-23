@@ -7,6 +7,18 @@ import { safeFilename } from "./util.js";
 export function dataRoot(): string {
   const override = process.env.TOOLBELT_DATA_DIR?.trim();
   if (override) return override;
+  return join(opencodeDataDir(), "agent-toolbelt");
+}
+
+/** Default XDG data base (OpenCode's own data dir), shared with legacyDataRoot. */
+function opencodeDataDir(): string {
+  const xdg = process.env.XDG_DATA_HOME?.trim();
+  const base = xdg || join(homedir(), ".local", "share");
+  return join(base, "opencode");
+}
+
+/** Data root before the move into OpenCode's data dir; used for one-time migration. */
+export function legacyDataRoot(): string {
   const xdg = process.env.XDG_DATA_HOME?.trim();
   const base = xdg || join(homedir(), ".local", "share");
   return join(base, "agent-toolbelt");

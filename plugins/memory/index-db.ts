@@ -4,7 +4,7 @@
  * is disposable: summaries on disk are the durable memory.
  */
 
-import { chmod, readFile } from "node:fs/promises";
+import { chmod, readFile, rename } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { indexTextMax, indexPath, jsonIndexPath } from "./paths.js";
 import type { IndexDoc, IndexState, MessageKind, SearchHit } from "./types.js";
@@ -424,7 +424,7 @@ export async function openIndex(): Promise<ToolbeltIndex> {
     const mod: any = await import("bun:sqlite");
     const Database = mod?.Database;
     if (typeof Database === "function") {
-      const index = new SqliteIndex(Database, indexPath());
+      const index = await openSqlite(Database);
       await chmod(indexPath(), 0o600).catch(() => undefined);
       return index;
     }
@@ -435,4 +435,23 @@ export async function openIndex(): Promise<ToolbeltIndex> {
   const error = `SQLite unavailable; using JSON fallback (${sqliteError || "unknown error"})`;
   console.error(`[toolbelt] ${error}`);
   return JsonIndex.open(jsonIndexPath(), error);
+}
+
+async function openSqlite(Database: any): Promise<ToolbeltIndex> {
+  const path = indexPath();
+  let index: ToolbeltIndex | undefined;
+  try {
+    index = new SqliteIndex(Database, path);
+    await index.count(); // probe: an image can open yet fail to read
+    return index;
+  } catch (error) {
+    // The database is disposable: an unreadable image (interrupted copy,
+    // crash mid-write) is quarantined and rebuilt lazily from the summaries.
+    const reason = error instanceof Error ? error.message : String(error);
+    if (index) await index.close().catch(() => undefined);
+    const quarantine = `${path}.corrupt-${Date.now()}`;
+    await rename(path, quarantine).catch(() => undefined);
+    console.error(`[toolbelt] index unreadable (${reason}); quarantined to ${quarantine}`);
+    return new SqliteIndex(Database, path);
+  }
 }
