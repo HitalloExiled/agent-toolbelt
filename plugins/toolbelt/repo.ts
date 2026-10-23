@@ -86,7 +86,7 @@ async function compute(directory: string, includeWorktree: boolean): Promise<str
   const detail =
     counts.total === 0
       ? "clean"
-      : `${counts.total} changed` +
+      : `${counts.total} changed, ` +
         [
           counts.modified ? `${counts.modified} modified` : "",
           counts.added ? `${counts.added} added` : "",
