@@ -1,6 +1,6 @@
 ---
 name: notes
-description: Long-term memory in SQLite (FTS5) via global CLI `notes` and tools `notes_add`/`notes_update`/`notes_confirm`/`notes_dispute`/`notes_retract`/`notes_history`/`notes_restore`/`notes_view`/`notes_search`/`notes_doctor`. Use to remember or recover decisions, configuration, snippets, and project context from previous sessions, and to record new notes — including the mandatory registration of resolved problems with symptom, cause, and solution. `notes_update` is a last resort, only to fix a note that is now known to be wrong or conflicts with verified information, and it keeps the previous version readable via `notes_history`/`notes_restore`; `notes_confirm`/`notes_dispute` set the trust signal on a note read as-is, and `notes_retract` hides noise without deleting. Refer to it whenever the user asks what was decided/done before, asks for previous context, or before working on a project with history.
+description: Curated, portable knowledge base in SQLite (FTS5) via global CLI `notes` and tools `notes_add`/`notes_update`/`notes_confirm`/`notes_dispute`/`notes_retract`/`notes_history`/`notes_restore`/`notes_view`/`notes_search`/`notes_doctor`. Stores distilled facts — decisions, resolved problems with symptom/cause/solution, configuration, snippets — with a trust lifecycle (`notes_confirm`/`notes_dispute` set the trust signal on a note; `notes_retract` hides noise without deleting) and full revision history; notes survive machines via export/import. `notes_update` is a last resort, only to fix a note now known to be wrong or conflicting, and keeps the previous version readable via `notes_history`/`notes_restore`. Use when a fact must stay true across sessions and machines, or before acting on a project with documented history. Not a conversation log: it holds distilled knowledge, not what was said in a session.
 metadata:
   audience: any
   opencode/slash: "true"
@@ -11,6 +11,14 @@ metadata:
 Long-term memory system based on SQLite (+ FTS5 index when available), exposed via the global CLI `notes`. The database lives at `~/.local/share/opencode/memory/notes.db` (or at the path in `$NOTES_DB`) and — together with the schema — is created on demand: a fresh machine needs no manual steps at all.
 
 Implementation and installation: repo **`agent-toolbelt`** (section `memory/`).
+
+## Scope
+
+**Curated, portable knowledge — not a conversation log.**
+
+- **What notes is for:** distilled facts that must stay true *after* the conversation ends and *on other machines* — decisions (and their why), resolved problems with root cause, configuration, reusable snippets. Every note carries a trust signal and a revision history, and the whole database exports/imports between machines; that portability is a first-class purpose, not a maintenance feature.
+- **What notes is not for:** journaling what was said or done in a session. Do not copy conversation content or "what happened" narratives into notes — register the distilled fact instead.
+- **The test:** if the knowledge only makes sense inside one machine's session history, it does not belong here. If it must hold on another machine, or months later, without the original conversation, it belongs here.
 
 ## How to use
 
@@ -48,7 +56,7 @@ notes doctor                      # diagnosis
 
 ## When to use
 
-- **Starting work** on a project with relevant history: search before acting.
+- **Starting work** on a project with relevant history: run `notes search` before acting (documented facts, not conversation recall).
 - **Resolving a non-trivial problem**: register symptom → cause → solution (section below). This is the most important rule of the skill.
 - **Making important decisions** (architecture, trade-offs, non-obvious configuration): record with category `#decision`.
 - **Generating reusable snippets/configurations**: `#snippet` / `#config`.

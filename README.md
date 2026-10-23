@@ -105,6 +105,20 @@ notes export ~/notes-backup.json   # ou '-' para stdout
 notes import ~/notes-backup.json   # append, ignorando duplicadas
 ```
 
+## Camadas de memória
+
+O repositório expõe duas camadas complementares, **isoladas por design**
+(nenhuma conhece a outra; cada uma define seu escopo por si):
+
+| Camada | Papel | Onde vive |
+|---|---|---|
+| **notes** (CLI + tools `notes_*`) | conhecimento **curado e portável**: fatos, decisões, problemas resolvidos, configs — com ciclo de confiança e histórico de versões; **via entre máquinas** (export/import) | `memory/notes.py` + `notes.db` |
+| **memory** (plugin) | **retrieval local** de conversas e compactações: índice derivado (FTS5 + busca semântica local), injeção de contexto e handoff; descartável e por projeto | `plugins/memory/` + `index.db`/`compactions/` |
+
+Regra prática: "o que foi **dito/feito** na conversa X?" → `memory_search`;
+"o que **sabemos com confiança** sobre X?" → `notes`. O que precisa valer
+em outra máquina precisa ser nota.
+
 ## CLI e tools
 
 O contrato completo de cada subsistema está nas skills (`skills/notes` e
