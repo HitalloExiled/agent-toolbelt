@@ -148,14 +148,17 @@ Carregado automaticamente como pacote local em `~/.config/opencode/plugins/toolb
    `<toolbelt-context>` com: repositório, branch e último commit (o status do
    working tree fica **fora** do bloco, para não invalidar o cache de prefixo
    do servidor a cada edição — peça o estado atual sob demanda pela ferramenta
-   `toolbelt`) e o handoff da sessão anterior do mesmo projeto
-   (Objective/Next Move + corpo completo do último resumo). Isso nunca é
-   persistido — é recalculado a cada injeção.
+   `toolbelt`) e o handoff da sessão anterior do mesmo projeto — apenas as
+   seções Objective/Next Move, marcadas como *dados não confiáveis* (o corpo
+   completo do resumo nunca entra no system prompt; use `toolbelt_summaries`
+   para ler). Isso nunca é persistido — é recalculado a cada injeção.
 3. **Permite busca cross-sessão.** Um índice derivado (SQLite FTS5, com
    fallback `LIKE` e, por último, JSON) guarda apenas texto de usuário, texto
    de assistente e resumos — nunca reasoning, nunca chamadas de tool. O
    backfill é preguiçoso e incremental: só acontece quando alguém busca, e só
-   processa sessões/mensagens novas desde a última vez.
+   processa sessões/mensagens novas desde a última vez. `scope=all` busca o
+   que já está indexado + todos os resumos em disco; para indexar todos os
+   projetos manualmente, use `action=index-all` (ou `/index-all`).
 
 ### Onde os dados ficam
 
@@ -174,21 +177,22 @@ versionado no repo nem escrito dentro dele.
 | Tool | Para quê |
 |---|---|
 | `toolbelt_summaries` | listar/buscar/ler resumos de compactação (`detail=brief\|full\|sections`) + estado do repo (`action=repo`) |
-| `toolbelt_search` | buscar no índice derivado (resumos + texto de usuário/assistente); `scope=project\|all` |
-| `toolbelt_history` | inspecionar a timeline completa de uma sessão (listar sessões, ler página, buscar, buscar uma mensagem); tool calls e reasoning só entram com `includeTools`/`includeReasoning` explícitos |
+| `toolbelt_search` | buscar no índice derivado (resumos + texto de usuário/assistente); `scope=project\|all`; `action=index-all` indexa todos os projetos manualmente (`rebuild=true` para rebuild completo) |
+| `toolbelt_history` | inspecionar a timeline completa de uma sessão (listar sessões, ler página, buscar, buscar uma mensagem); tool calls e reasoning só entram com `includeTools`/`includeReasoning` explícitos; sessões de outro projeto exigem `scope=all` |
 
 ### Comandos
 
 `/summaries`, `/summary [id] [brief|full|sections]`, `/sessions`, `/index`
-(força reindex), `/repo` (mostra só o estado do git). Cada um é um atalho que
-chama as tools acima.
+(força reindex do projeto), `/index-all` (indexa todos os projetos;
+`/index-all rebuild` para rebuild completo) e `/repo` (mostra só o estado do
+git). Cada um é um atalho que chama as tools acima.
 
 ### Variáveis de ambiente
 
 | Variável | Efeito | Default |
 |---|---|---|
 | `TOOLBELT_DATA_DIR` | raiz de dados do plugin (sobrepõe XDG) | `$XDG_DATA_HOME/agent-toolbelt` |
-| `TOOLBELT_SUMMARY_KEEP` | quantos resumos manter por projeto (os mais antigos são podados, do disco e do índice) | `20` |
+| `TOOLBELT_SUMMARY_KEEP` | quantos resumos manter por projeto (os mais antigos são podados, do disco e do índice, quando um novo resumo é capturado — nunca na path de leitura) | `20` |
 | `TOOLBELT_INJECT_MAX` | teto de bytes do bloco `<toolbelt-context>` injetado | `~6 KB` |
 | `TOOLBELT_INDEX_TEXT_MAX` | teto de caracteres de texto indexado por documento | — |
 | `TOOLBELT_BACKFILL_SESSIONS` | teto de sessões processadas por backfill | — |
@@ -213,6 +217,7 @@ reinicie o OpenCode.
 ```bash
 npm install        # devDeps: typescript, @types/node, @opencode-ai/plugin, @opencode/plugin, @opencode/client, @opencode/schema
 npm run typecheck
+npm test           # suite do plugin (bun test, plugins/toolbelt/test)
 ```
 
 Smoke do CLI sem configurar a máquina:

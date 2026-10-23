@@ -50,12 +50,23 @@ const COMMANDS: Definition[] = [
   },
   {
     name: "index",
-    description: "Show (or rebuild) the cross-session search index",
+    description: "Show (or rebuild) the cross-session search index of this project",
     prompt: (args) => {
       const wantsRebuild = /\b(rebuild|reindex|--rebuild)\b/i.test(args);
       return wantsRebuild
         ? 'Call toolbelt_search with action="reindex" and report the result.'
-        : 'Call toolbelt_search with action="stats" and report the result. Mention that "/index rebuild" forces a reindex.';
+        : 'Call toolbelt_search with action="stats" and report the result. Mention that "/index rebuild" forces a reindex and "/index-all" indexes every project.';
+    },
+  },
+  {
+    name: "index-all",
+    description: "Manually index every project (summaries + session timelines)",
+    prompt: (args) => {
+      const wantsRebuild = /\b(rebuild|full|--rebuild)\b/i.test(args);
+      return [
+        `Call toolbelt_search with action="index-all"${wantsRebuild ? " and rebuild=true" : ""} and report the per-project result.`,
+        "Mention that '/index-all rebuild' forces a full rebuild instead of the incremental default.",
+      ].join("\n");
     },
   },
   {

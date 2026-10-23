@@ -360,10 +360,9 @@ export async function registerTools(ctx: PluginContext, runtime: Runtime) {
               cursor: str(input, "cursor"),
             });
           } catch (error) {
+            const detail = error instanceof Error && error.message ? error.message : "session not found";
             return {
-              content:
-                `Could not read session \`${sessionID}\`: ${error instanceof Error ? error.message : String(error)}. ` +
-                'Check the id with action="sessions".',
+              content: `Could not read session \`${sessionID}\`: ${detail}. Check the id with action="sessions".`,
             };
           }
           const { page, partial, source } = read;
@@ -395,10 +394,9 @@ export async function registerTools(ctx: PluginContext, runtime: Runtime) {
               windows: num(input, "windows", 3, 1, 10),
             });
           } catch (error) {
+            const detail = error instanceof Error && error.message ? error.message : "session not found";
             return {
-              content:
-                `Could not search session \`${sessionID}\`: ${error instanceof Error ? error.message : String(error)}. ` +
-                'Check the id with action="sessions".',
+              content: `Could not search session \`${sessionID}\`: ${detail}. Check the id with action="sessions".`,
             };
           }
           return {
@@ -414,11 +412,11 @@ export async function registerTools(ctx: PluginContext, runtime: Runtime) {
           const { api, source } = await getHistoryApi(ctx, sessionID);
           try {
             const message = await api.get({ sessionID, messageID });
-            const text = formatMessage(message, {
-              includeTools: input.includeTools === undefined ? true : includeTools,
-              includeReasoning,
-            });
-            return { content: text || `Message ${messageID} has no displayable content.` };
+            // Same defaults as read/search: tool payloads are opt-in.
+            const text = formatMessage(message, { includeTools, includeReasoning });
+            if (!text) return { content: `Message ${messageID} has no displayable content.` };
+            const note = includeTools ? "" : "\n\n> Tool calls hidden; pass includeTools=true to see them.";
+            return { content: text + note };
           } catch (error) {
             return {
               content: `Could not read ${messageID} from ${sessionID} (source: ${source}): ${

@@ -5,7 +5,8 @@
   "type": "module",
   "description": "Tools e skills do agente + bootstrap de maquina (memoria em SQLite, sandbox Docker).",
   "scripts": {
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "bun test plugins/toolbelt/test"
   },
   "devDependencies": {
     "@opencode-ai/plugin": "1.17.7",
