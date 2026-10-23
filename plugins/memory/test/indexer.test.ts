@@ -23,9 +23,14 @@ beforeAll(async () => {
   // No live service in unit tests: the project list degrades to empty and
   // nothing talks to the real OpenCode server.
   process.env.OPENCODE_SERVICE_FILE = join(dataDir, "no-service.json");
+  // indexSummaryFiles fires background embedding: keep the engine off so the
+  // suite never downloads model weights (embed logic is tested separately
+  // with a fake engine in embed.test.ts).
+  process.env.MEMORY_EMBED_DISABLED = "1";
 });
 
 afterAll(async () => {
+  delete process.env.MEMORY_EMBED_DISABLED;
   await rm(dataDir, { recursive: true, force: true });
   await rm(testBase, { recursive: true, force: true }).catch(() => undefined);
 });

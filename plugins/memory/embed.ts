@@ -364,13 +364,15 @@ export interface EmbedStats {
 /**
  * Embed the given documents, replacing any previous vectors for a document.
  * Documents whose stored vector already matches the current text and model
- * are skipped. Never throws: per-document failures are logged and the
- * keyword-only behavior stands.
+ * are skipped (a project move only re-buckets the vectors). Never throws:
+ * per-document failures are logged and the keyword-only behavior stands.
+ * MEMORY_EMBED_DISABLED gates the auto-acquired engine only; an explicitly
+ * passed engine always runs (tests inject a fake one).
  */
 export async function embedDocs(runtime: Runtime, docs: IndexDoc[], engine?: EmbedderEngine): Promise<EmbedStats> {
   const stats: EmbedStats = { embedded: 0, skipped: 0, rehomed: 0 };
-  if (embedDisabled() || docs.length === 0) return stats;
-  const eng = engine ?? (await getEngine());
+  if (docs.length === 0) return stats;
+  const eng = engine ?? (embedDisabled() ? undefined : await getEngine());
   if (!eng) return stats;
   for (const doc of docs) {
     const text = clip(doc.text, VECTOR_TEXT_MAX, "");

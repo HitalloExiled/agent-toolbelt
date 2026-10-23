@@ -13,7 +13,7 @@ import { sessionRuntime } from "./runtime.js";
 import type { MessageLike, SessionInfoLike } from "./types.js";
 import { injectMax } from "./paths.js";
 import { repoSnapshot } from "./repo.js";
-import { captureCompaction, findSection, listSummaries, toIndexDoc } from "./summaries.js";
+import { captureCompaction, findSection, listSummaries, migrateSessionSummaries, toIndexDoc } from "./summaries.js";
 import { resolveProjectID } from "./projects.js";
 import { clip, fmtDate } from "./util.js";
 import { getSessionInfo } from "./history.js";
@@ -117,10 +117,20 @@ export async function onContext(
   const projectID = (await resolveProjectID(info)) || info.projectID;
   const state = sessionRuntime(runtime, event.sessionID);
   if (state.projectID !== projectID) {
+    const previous = state.projectID;
     state.projectID = projectID;
     state.injected = false;
     state.captured = false;
     state.lastCompactionID = undefined;
+    // The in-memory previous project is a fast path only: after a service
+    // restart it is unknown, and the backfill (sessions_indexed) covers it.
+    if (previous) {
+      void migrateSessionSummaries(previous, projectID, event.sessionID).catch((error) =>
+        console.error(
+          `[memory] summary migration failed for ${event.sessionID}: ${error instanceof Error ? error.message : String(error)}`,
+        ),
+      );
+    }
   }
 
   await captureLatestCompaction(ctx, runtime, event.sessionID, info, projectID);

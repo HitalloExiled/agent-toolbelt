@@ -5,7 +5,7 @@ import { readdir } from "node:fs/promises";
 import type { Runtime } from "./runtime.js";
 import { embedDocs } from "./embed.js";
 import { backfillMessageLimit, backfillSessionLimit, compactionsRoot } from "./paths.js";
-import { captureCompaction, listAllSummaries, listSummaries, pruneSummaries, toIndexDoc } from "./summaries.js";
+import { captureCompaction, listAllSummaries, listSummaries, migrateSessionSummaries, pruneSummaries, toIndexDoc } from "./summaries.js";
 import { extractNarrative, listAllMessages, listSessions, messageCreated } from "./history.js";
 import { listProjects, resolveProjectID } from "./projects.js";
 import type { IndexDoc, MessageLike, SessionInfoLike } from "./types.js";
@@ -96,6 +96,17 @@ async function doBackfill(runtime: Runtime, projectID: string): Promise<Backfill
     // Sessions inside a real project's directory can carry the root project
     // id "global"; index them under the project their directory belongs to.
     const effectiveProject = (await resolveProjectID(session)) || projectID;
+    // A session that was re-homed (moved to another project's directory)
+    // keeps its old compaction files in the old bucket. Consolidate them into
+    // the new bucket so the project's history stays complete. The persisted
+    // sessions_indexed row is the reliable source for the previous project.
+    if (stored && stored.projectID && stored.projectID !== effectiveProject) {
+      void migrateSessionSummaries(stored.projectID, effectiveProject, session.id).catch((error) =>
+        console.error(
+          `[memory] summary migration failed for ${session.id}: ${error instanceof Error ? error.message : String(error)}`,
+        ),
+      );
+    }
     if (stored && stored.projectID === effectiveProject && stored.updatedAt >= updatedAt && updatedAt > 0) continue;
 
     let listed;

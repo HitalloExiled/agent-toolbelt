@@ -154,6 +154,59 @@ async function removeStaleSummaries(projectID: string, messageID: string): Promi
   }
 }
 
+/** Rewrite only the projectID line inside the frontmatter (the body is untouched). */
+function rewriteProjectLine(raw: string, projectID: string): string {
+  const close = raw.indexOf("\n---", 4);
+  const fmEnd = close === -1 ? raw.length : close;
+  const frontmatter = raw.slice(0, fmEnd).replace(/^projectID:.*/m, `projectID: ${JSON.stringify(projectID)}`);
+  return frontmatter + raw.slice(fmEnd);
+}
+
+/**
+ * Consolidate a session's compaction history after it moved between project
+ * buckets: every summary file of `sessionID` still sitting in `oldProjectID`
+ * is rewritten (frontmatter projectID) and moved into `newProjectID`.
+ * Idempotent; returns the number of files moved.
+ */
+export async function migrateSessionSummaries(
+  oldProjectID: string,
+  newProjectID: string,
+  sessionID: string,
+): Promise<number> {
+  if (!oldProjectID || !newProjectID || !sessionID || oldProjectID === newProjectID) return 0;
+  let moved = 0;
+  for (const record of await listSummaries(oldProjectID, 1000)) {
+    if (record.sessionID !== sessionID) continue;
+    const target = summaryPath(newProjectID, record.created, record.messageID);
+    let targetExists = false;
+    try {
+      await stat(target);
+      targetExists = true;
+    } catch {
+      // target is free
+    }
+    if (targetExists) {
+      // A copy already lives in the new bucket: drop the source only when the
+      // bodies agree (same compaction); conflicting content is left in place.
+      const otherRaw = await readText(target);
+      const otherBody = otherRaw === undefined ? undefined : parseFrontmatter(otherRaw).body.trim();
+      if (otherBody === record.body) {
+        await rm(record.path, { force: true }).catch(() => undefined);
+        moved++;
+      } else {
+        console.error(`[memory] summary migration conflict for ${record.messageID}; left both copies`);
+      }
+      continue;
+    }
+    const raw = await readText(record.path);
+    if (raw === undefined) continue;
+    await atomicWrite(target, rewriteProjectLine(raw, newProjectID));
+    await rm(record.path, { force: true }).catch(() => undefined);
+    moved++;
+  }
+  return moved;
+}
+
 export async function listSummaries(projectID: string, limit = 20): Promise<SummaryRecord[]> {
   const records: SummaryRecord[] = [];
   for (const path of await listMarkdown(projectDir(projectID))) {

@@ -166,6 +166,12 @@ Carregado automaticamente como pacote local em `~/.config/opencode/plugins/memor
    resumos em disco; para indexar todos os projetos manualmente, use
    `action=index-all` (ou `/index-all`).
 
+   Resumos acompanham a sessão: quando uma sessão muda de projeto, os resumos
+   dela são movidos do bucket antigo para o novo (consolidação lazy, no
+   próximo contato da sessão — injeção ou backfill) — o handoff e a busca do
+   novo projeto passam a ver o histórico completo, e os vetores são
+   re-bucketeados junto (sem re-embed).
+
 ### Onde os dados ficam
 
 ```

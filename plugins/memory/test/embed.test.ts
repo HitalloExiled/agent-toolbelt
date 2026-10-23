@@ -267,15 +267,11 @@ describe("embedDocs", () => {
     await index.close();
   });
 
-  test("is a no-op when embedding is disabled", async () => {
+  test("is a no-op when embedding is disabled (no explicit engine)", async () => {
     const { index, runtime } = await freshRuntime();
     process.env.MEMORY_EMBED_DISABLED = "1";
     try {
-      expect(await embedDocs(runtime, [doc("e9", "any text")], fakeEngine().engine)).toEqual({
-        embedded: 0,
-        skipped: 0,
-        rehomed: 0,
-      });
+      expect(await embedDocs(runtime, [doc("e9", "any text")])).toEqual({ embedded: 0, skipped: 0, rehomed: 0 });
       expect(await index.vectorState("e9")).toBeUndefined();
     } finally {
       delete process.env.MEMORY_EMBED_DISABLED;
