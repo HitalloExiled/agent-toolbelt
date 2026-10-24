@@ -1,3 +1,4 @@
 [submodule "plugins/memory"]
 	path = plugins/memory
 	url = git@github.com:HitalloExiled/opencode-memory.git
+	branch = main
