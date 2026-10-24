@@ -1,6 +1,6 @@
 ---
 name: notes
-description: Curated, portable knowledge base in SQLite (FTS5) via global CLI `notes` and tools `notes_add`/`notes_update`/`notes_confirm`/`notes_dispute`/`notes_retract`/`notes_history`/`notes_restore`/`notes_view`/`notes_search`/`notes_doctor`. Stores distilled facts — decisions, resolved problems with symptom/cause/solution, configuration, snippets — with a trust lifecycle (`notes_confirm`/`notes_dispute` set the trust signal on a note; `notes_retract` hides noise without deleting) and full revision history; notes survive machines via export/import. `notes_update` is a last resort, only to fix a note now known to be wrong or conflicting, and keeps the previous version readable via `notes_history`/`notes_restore`. Use when a fact must stay true across sessions and machines, or before acting on a project with documented history. Not a conversation log: it holds distilled knowledge, not what was said in a session.
+description: Curated, portable knowledge base in SQLite (FTS5) via global CLI `notes` and tools `notes_add`/`notes_update`/`notes_confirm`/`notes_dispute`/`notes_retract`/`notes_history`/`notes_restore`/`notes_view`/`notes_search`/`notes_doctor`. Stores distilled facts at any scope (global, project, machine) — decisions, resolved problems with symptom/cause/solution, configuration, snippets — with a trust lifecycle (`notes_confirm`/`notes_dispute` set the trust signal on a note; `notes_retract` hides noise without deleting) and full revision history; notes survive machines via export/import. `notes_update` is a last resort, only to fix a note now known to be wrong or conflicting, and keeps the previous version readable via `notes_history`/`notes_restore`. Use when a fact must stay true across sessions and machines, or before acting on a project with documented history. Not a conversation log: it holds distilled knowledge, not what was said in a session.
 metadata:
   audience: any
   opencode/slash: "true"
@@ -14,11 +14,11 @@ Implementation and installation: repo **`agent-toolbelt`** (section `memory/`).
 
 ## Scope
 
-**Curated, portable knowledge — not a conversation log.**
+**Curated, distilled knowledge at any scope — not a conversation log.**
 
-- **What notes is for:** distilled facts that must stay true *after* the conversation ends and *on other machines* — decisions (and their why), resolved problems with root cause, configuration, reusable snippets. Every note carries a trust signal and a revision history, and the whole database exports/imports between machines; that portability is a first-class purpose, not a maintenance feature.
+- **What notes is for:** distilled facts that must stay true *after* the conversation ends — decisions (and their why), resolved problems with root cause, configuration, reusable snippets. At any scope: **global** (machine-independent), **project**-specific, or **machine**-specific. Every note carries a trust signal and a revision history, and the whole database exports/imports between machines; local-scope facts travel too — what's local is their *applicability*, not their registration.
 - **What notes is not for:** journaling what was said or done in a session. Do not copy conversation content or "what happened" narratives into notes — register the distilled fact instead.
-- **The test:** if the knowledge only makes sense inside one machine's session history, it does not belong here. If it must hold on another machine, or months later, without the original conversation, it belongs here.
+- **The test (distillation, not portability):** is this a claim with a cause/evidence, or a report of what happened? If it is a distilled fact, register it — its scope is then *classified* (the `Scope:` field below), never used as a reason to skip the registration.
 
 ## How to use
 
@@ -73,6 +73,7 @@ Symptom: <what was observed / error message>
 Cause: <root cause, not the symptom>
 Solution: <what fixed it, reproducible>
 Files: <paths touched, optional>
+Scope: <global | project:<name> | machine:<name>, optional>
 ```
 
 Rules:
@@ -170,6 +171,7 @@ get `retract`. `update` stays reserved for genuine corrections.
 ## Conventions
 
 - **Categories**: `#problem`, `#decision`, `#config`, `#snippet`, `#architecture`, `#general`.
+- **Scope**: how far the fact applies — `global` (machine-independent; the default, may be omitted), `project:<name>`, or `machine:<name>`. Scope is orthogonal to category and tags: it tells a reader on another machine *where* the fact applies, not whether it should have been registered at all.
 - **Tags**: keywords separated by space, without `#` (e.g.: `selinux module`).
 - **Title**: short and specific — for problems, describe the symptom (e.g. "sandbox TUI fails without exec on /tmp").
 - **Content**: the fact/decision + the why + relevant commands or paths. Write for someone who hasn't seen the conversation.
