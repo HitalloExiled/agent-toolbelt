@@ -31,7 +31,7 @@ agent-toolbelt/
 │   ├── notes.ts
 │   └── sandbox.ts
 ├── plugins/
-│   └── memory/          # plugin OpenCode V2: resumos, injeção de contexto, busca
+│   └── memory/          # plugin OpenCode V2 (SUBMODULE → opencode-memory): resumos, injeção, busca
 ├── sandbox/
 │   ├── setup.sh        # expõe opencode-sb/opencode-sandboxed no PATH
 │   ├── run.sh          # orquestrador (task/steer/watch/peek/status/up/down/…)
@@ -46,6 +46,17 @@ agent-toolbelt/
 ```
 
 ## Setup
+
+O `plugins/memory` é um **submodule** do repo standalone
+[**opencode-memory**](https://github.com/HitalloExiled/opencode-memory):
+
+```bash
+git clone --recurse-submodules git@github.com:HailloExposed/agent-toolbelt.git
+cd agent-toolbelt
+```
+
+(ou, num clone já feito: `git submodule update --init plugins/memory` — o
+`./setup.sh` faz isso sozinho quando o submodule está vazio.)
 
 ```bash
 ./setup.sh                 # configura tudo (inclui build + smoke do sandbox)
@@ -65,7 +76,7 @@ O que o `setup.sh` faz, em ordem:
 | memória | symlink `~/.local/bin/notes` → `memory/notes.py`; migra o banco legado, se existir |
 | skills | symlink `skills/<id>/SKILL.md` → `~/.config/opencode/skills/<id>/SKILL.md` |
 | tools | symlink `tools/*.ts` → `~/.config/opencode/tools/` |
-| plugin `memory` | symlink `plugins/memory/` → `~/.config/opencode/plugins/memory` (resumos, injeção de contexto, busca) |
+| plugin `memory` | garante o submodule `plugins/memory` inicializado (clone de `opencode-memory`) + symlink → `~/.config/opencode/plugins/memory` |
 | sandbox | daemon docker → CLI `opencode-sb` → guard de firewall → imagens/rede → self-test → tarefa de fumaça |
 | verificação | `notes init`, `notes doctor`, estado do sandbox, PATH |
 
@@ -279,15 +290,24 @@ rm -rf "${XDG_DATA_HOME:-$HOME/.local/share}/opencode/memory/compactions" \
 
 Para desativar sem remover nada, apague o link
 `~/.config/opencode/plugins/memory` (ou rode `./setup.sh --remove`) e
-reinicie o OpenCode.
+reinicie o OpenCode. O `--remove` só desvincula os symlinks do repo — o
+submodule `plugins/memory` é parte do agent-toolbelt e permanece (use
+`git submodule deinit plugins/memory` para removê-lo do working tree).
 
 ## Desenvolvimento
 
 ```bash
+git submodule update --init plugins/memory   # se o clone veio sem o submodule
 npm install        # devDeps: typescript, @types/node, @opencode-ai/plugin, @opencode/plugin, @opencode/client, @opencode/schema
-npm run typecheck
+npm run typecheck  # typecheck da raiz (types do plugin resolvem do node_modules da raiz)
 npm test           # suite do plugin (bun test, plugins/memory/test)
 ```
+
+O plugin também se desenvolve standalone no repo
+[opencode-memory](https://github.com/HitalloExiled/opencode-memory)
+(`npm install && npm run typecheck && npm test` lá); mudanças nele voltam
+para o agent-toolbelt via `git submodule update` (commit do submodule
+atualizado no repo pai).
 
 Smoke do CLI sem configurar a máquina:
 

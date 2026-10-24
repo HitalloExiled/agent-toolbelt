@@ -95,6 +95,16 @@ ensure_memory_plugin() {
   case "$(readlink "$CONFIG_DIR/plugins/toolbelt" 2>/dev/null || true)" in
     "$ROOT"/plugins/*) rm -f "$CONFIG_DIR/plugins/toolbelt" 2>/dev/null && say "  legado: plugins/toolbelt removido (renomeado para memory)" ;;
   esac
+  # The plugin now lives in the opencode-memory repo, vendored here as a git
+  # submodule (plugins/memory). A fresh clone arrives without it.
+  if [ ! -f "$ROOT/plugins/memory/index.ts" ]; then
+    if git -C "$ROOT" submodule update --init plugins/memory >/dev/null 2>&1; then
+      say "  submodule: plugins/memory inicializado (opencode-memory)"
+    else
+      warn "submodule plugins/memory ausente e git submodule update falhou (offline?); o plugin nao vai carregar"
+      return 1
+    fi
+  fi
   link "$ROOT/plugins/memory" "$CONFIG_DIR/plugins/memory" || true
 }
 
