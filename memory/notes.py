@@ -22,7 +22,7 @@ import sys
 import unicodedata
 from datetime import datetime
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 HERE = os.path.dirname(os.path.realpath(__file__))
 SCHEMA_SQL = os.path.join(HERE, "schema.sql")
@@ -182,7 +182,7 @@ def missing_problem_sections(content: str) -> list[str]:
 # Colunas de uma nota, na ordem em que as linhas sao selecionadas e impressas.
 NOTE_FIELDS = (
     "id", "timestamp", "category", "tags", "title", "content",
-    "verified_at", "disputed_at", "retracted_at", "status_reason",
+    "author", "verified_at", "disputed_at", "retracted_at", "status_reason",
 )
 
 
@@ -205,7 +205,9 @@ def _snapshot_revision(conn: sqlite3.Connection, note_id: int, revised_at: str, 
     o snapshot — a revisão é o que a nota ERA.
     """
     (_, timestamp, category, tags, title, content,
-     verified_at, disputed_at, retracted_at, status_reason) = note_row
+     _author, verified_at, disputed_at, retracted_at, status_reason) = note_row
+    # author is immutable (set at creation), so it is not part of the
+    # revision snapshot — the current value always equals the historical one.
     cur = conn.execute(
         "INSERT INTO note_revisions (note_id, revised_at, timestamp, category, tags, title,"
         " content, verified_at, disputed_at, retracted_at, status_reason)"
@@ -216,15 +218,16 @@ def _snapshot_revision(conn: sqlite3.Connection, note_id: int, revised_at: str, 
     return cur.lastrowid
 
 
-def add_note(category: str, title: str, tags: str, content: str) -> None:
+def add_note(category: str, title: str, tags: str, content: str, author: str | None = None) -> None:
     init_db()
     conn = _connect()
     try:
         timestamp = now_timestamp()
         cur = conn.execute(
-            "INSERT INTO notes (timestamp, category, tags, title, content)"
-            " VALUES (?, ?, ?, ?, ?)",
-            (timestamp, normalize_category(category), tags, title, content),
+            "INSERT INTO notes (timestamp, category, tags, title, content, author)"
+            " VALUES (?, ?, ?, ?, ?, ?)",
+            (timestamp, normalize_category(category), tags, title, content,
+             author.strip() if author and author.strip() else None),
         )
         conn.commit()
         print(f"✅ Nota {cur.lastrowid} salva em {timestamp} [{normalize_category(category)}]")
@@ -515,8 +518,9 @@ def _print_rows(header: str, rows: list) -> None:
     print(header + "\n" + "=" * 50)
     for r in rows:
         (note_id, timestamp, category, tags, title, content,
-         verified_at, disputed_at, retracted_at, status_reason) = r
-        print(f"#{note_id} [{timestamp}] ({category}) **{title}**")
+         author, verified_at, disputed_at, retracted_at, status_reason) = r
+        by = f" (by {author})" if author else ""
+        print(f"#{note_id} [{timestamp}] ({category}) **{title}**{by}")
         flags = []
         if retracted_at:
             flags.append(f"🚫 retracted {retracted_at}" + (f": {status_reason}" if status_reason else ""))
@@ -746,11 +750,12 @@ def import_notes(path: str) -> int:
                 skipped += 1
                 continue
             cur = conn.execute(
-                "INSERT INTO notes (timestamp, category, tags, title, content,"
+                "INSERT INTO notes (timestamp, category, tags, title, content, author,"
                 " verified_at, disputed_at, retracted_at, status_reason)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     timestamp, category, tags, title, content,
+                    n.get("author") or None,
                     n.get("verified_at") or None,
                     n.get("disputed_at") or None,
                     n.get("retracted_at") or None,
@@ -954,7 +959,7 @@ def print_help() -> None:
 📚 Notes CLI (notes)
 
 Uso:
-  notes add "<categoria>" "<título>" "<tags>" "<conteúdo>"
+  notes add "<categoria>" "<título>" "<tags>" "<conteúdo>" [--author <nome>]
   notes update <id> [--title T] [--tags T] [--content C | --content-file F]
                     [--category C]  # ÚLTIMO RECURSO: corrige informação conflitante
   notes confirm <id>                # ✔ reverifiquei: vale hoje (limpa disputa/retração)
@@ -988,7 +993,22 @@ def main(argv: list[str]) -> int:
         if len(argv) < 6:
             print('Erro: "add" requer categoria, título, tags e conteúdo.')
             return 1
-        add_note(argv[2], argv[3], argv[4], argv[5])
+        # Optional "--author <nome>" after the positional content: who
+        # registered the note (agent self-identifies; humans pass their name).
+        author = None
+        rest = argv[6:]
+        i = 0
+        while i < len(rest):
+            if rest[i] == "--author":
+                if i + 1 >= len(rest):
+                    print('Erro: "--author" requer um nome.')
+                    return 1
+                author = rest[i + 1]
+                i += 2
+            else:
+                print(f'Erro: opção inesperada em "add": {rest[i]!r}.')
+                return 1
+        add_note(argv[2], argv[3], argv[4], argv[5], author)
     elif cmd == "update":
         if len(argv) < 3:
             print('Erro: "update" requer o id da nota.')

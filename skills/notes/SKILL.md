@@ -42,7 +42,7 @@ Via terminal (or when tools are unavailable), the equivalent CLI:
 ```bash
 notes search "<term>" [limit] [--all]   # all words first (AND), then any (OR)
 notes list [limit] [--all]              # default: 10; --all includes retracted
-notes add "<category>" "<title>" "<tags>" "<content>"
+notes add "<category>" "<title>" "<tags>" "<content>" [--author <name>]
 notes update <id> [--title T] [--tags T] [--content C | --content-file F]
                   [--category C]  # last resort: fix conflicting information
 notes confirm <id>                # re-verified: still valid (clears dispute/retraction)
@@ -174,6 +174,7 @@ get `retract`. `update` stays reserved for genuine corrections.
 - **Scope**: how far the fact applies — `global` (machine-independent; the default, may be omitted), `project:<name>`, or `machine:<name>`. Scope is orthogonal to category and tags: it tells a reader on another machine *where* the fact applies, not whether it should have been registered at all.
 - **Tags**: keywords separated by space, without `#` (e.g.: `selinux module`).
 - **Title**: short and specific — for problems, describe the symptom (e.g. "sandbox TUI fails without exec on /tmp").
+- **Author**: who registered the note (`--author <name>` / `author` on `notes_add`). Agents pass their own name; humans registering from a terminal pass theirs. Set at creation, never changed by `update`; shown as `(by <author>)` in search/list/view.
 - **Content**: the fact/decision + the why + relevant commands or paths. Write for someone who hasn't seen the conversation.
 
 ## Backup and transport

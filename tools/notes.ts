@@ -119,11 +119,20 @@ export const add = tool({
       .string()
       .optional()
       .describe("Space-separated keywords, without '#' (e.g. 'selinux module')."),
+    author: tool.schema
+      .string()
+      .optional()
+      .describe(
+        "Who registered the note (attribution): your agent name when acting as an agent, " +
+          "or the human's name when a person registers it from a terminal. Shown as " +
+          "'(by <author>)' in search/list/view.",
+      ),
   },
   async execute(args) {
     const category = args.category;
     const content = args.content ?? "";
     const tags = args.tags ?? "";
+    const author = args.author?.trim() || undefined;
 
     if (category === "problem") {
       const missing = missingProblemSections(content);
@@ -146,11 +155,13 @@ export const add = tool({
       return { title: "notes_add: refused", output: "❌ empty title." };
     }
 
-    const run = await runNb(["add", `#${category}`, args.title, tags, content]);
+    const addArgs = ["add", `#${category}`, args.title, tags, content];
+    if (author) addArgs.push("--author", author);
+    const run = await runNb(addArgs);
     return {
       title: `notes_add: ${category} — ${args.title}`,
       output: render(run),
-      metadata: { category, exit: run.code },
+      metadata: { category, author, exit: run.code },
     };
   },
 });
