@@ -175,11 +175,17 @@ Carregado automaticamente como pacote local em `~/.config/opencode/plugins/memor
    `<memory-context>` com: repositório, branch e último commit (o status do
    working tree fica **fora** do bloco, para não invalidar o cache de prefixo
    do servidor a cada edição — peça o estado atual sob demanda pela ferramenta
-   `memory.summaries` com `action=repo`) e o handoff da sessão anterior do
-   mesmo projeto — apenas as
-   seções Objective/Next Move, marcadas como *dados não confiáveis* (o corpo
-   completo do resumo nunca entra no system prompt; use `memory.summaries`
-   para ler). Isso nunca é persistido — é recalculado a cada injeção.
+   `memory.summaries` com `action=repo`), **notas relevantes** da memória de
+   longa duração (lidas de `notes.db`, quando existir na máquina — as cujas
+   `Scope:` nomeiam o projeto da sessão ou esta máquina, nunca re-traídas,
+   mais recentes primeiro) e o handoff da sessão anterior do mesmo projeto —
+   apenas as seções Objective/Next Move, marcadas como *dados não confiáveis*
+   (o corpo completo do resumo nunca entra no system prompt; use
+   `memory.summaries` para ler). Junto ao bloco, o plugin injeta também uma
+   pequena regra de *memory routing* — orientativa e **aditiva** (nunca
+   substitui as instruções originais): consulte a memória antes de agir no
+   mundo quando a pergunta já pode estar respondida nela. Isso nunca é
+   persistido — é recalculado a cada injeção.
 3. **Permite busca cross-sessão.** Um índice derivado (SQLite FTS5, com
    fallback `LIKE` e, por último, JSON) guarda apenas texto de usuário, texto
    de assistente e resumos — nunca reasoning, nunca chamadas de tool. A busca
@@ -274,6 +280,7 @@ tools acima.
 | `MEMORY_DATA_DIR` | raiz de dados do plugin (sobrepõe XDG) | `$XDG_DATA_HOME/opencode/memory` |
 | `MEMORY_SUMMARY_KEEP` | quantos resumos manter por projeto (os mais antigos são podados, do disco e do índice, quando um novo resumo é capturado — nunca na path de leitura) | `20` |
 | `MEMORY_INJECT_MAX` | teto de bytes do bloco `<memory-context>` injetado | `~6 KB` |
+| `MEMORY_NOTES_INJECT` | quantas notas relevantes injetar no `<memory-context>` (`0` desliga a seção de notas) | `3` |
 | `MEMORY_INDEX_TEXT_MAX` | teto de caracteres de texto indexado por documento | — |
 | `MEMORY_BACKFILL_SESSIONS` | teto de sessões processadas por backfill | — |
 | `MEMORY_BACKFILL_MESSAGES` | teto de mensagens processadas por sessão no backfill | — |
