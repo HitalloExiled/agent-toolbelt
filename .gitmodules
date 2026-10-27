@@ -2,3 +2,7 @@
 	path = plugins/memory
 	url = git@github.com:HitalloExiled/opencode-memory.git
 	branch = main
+[submodule "plugins/notes"]
+	path = plugins/notes
+	url = git@github.com:HitalloExiled/opencode-notes.git
+	branch = main

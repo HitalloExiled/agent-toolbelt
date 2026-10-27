@@ -48,16 +48,18 @@ opencode-tools/
 
 ## Setup
 
-O `plugins/memory` é um **submodule** do repo standalone
-[**opencode-memory**](https://github.com/HitalloExiled/opencode-memory):
+Os plugins `plugins/memory` e `plugins/notes` são **submodules** dos repos
+standalone [**opencode-memory**](https://github.com/HitalloExiled/opencode-memory)
+e [**opencode-notes**](https://github.com/HitalloExiled/opencode-notes),
+respectivamente:
 
 ```bash
 git clone --recurse-submodules git@github.com:HitalloExiled/opencode-tools.git
 cd opencode-tools
 ```
 
-(ou, num clone já feito: `git submodule update --init plugins/memory` — o
-`./setup.sh` faz isso sozinho quando o submodule está vazio.)
+(ou, num clone já feito: `git submodule update --init plugins/memory plugins/notes` — o
+`./setup.sh` faz isso sozinho quando um submodule está vazio.)
 
 ```bash
 ./setup.sh                 # configura tudo (inclui build + smoke do sandbox)
@@ -307,8 +309,9 @@ submodule `plugins/memory` é parte do opencode-tools e permanece (use
 
 ## Plugin: notes
 
-Plugin (`plugins/notes/`, id `notes`; vive neste repo, não é submodule) que
-expõe as operações do CLI `notes` como tools tipadas no namespace `notes`,
+Plugin (`plugins/notes/`, id `notes`; vendored como **git submodule** do repo
+[opencode-notes](https://github.com/HitalloExiled/opencode-notes)) que expõe
+as operações do CLI `notes` como tools tipadas no namespace `notes`,
 no mesmo padrão do plugin `memory` (`memory.*` / `notes.*`):
 
 - **Code Mode:** `tools.notes.add`, `tools.notes.search`, `tools.notes.confirm`,
@@ -337,17 +340,19 @@ condicional ("se existir na máquina"), mantendo cada plugin standalone.
 ## Desenvolvimento
 
 ```bash
-git submodule update --init plugins/memory   # se o clone veio sem o submodule
+git submodule update --init plugins/memory plugins/notes   # se o clone veio sem os submodules
 npm install        # devDeps: typescript, @types/node, @opencode-ai/plugin, @opencode/plugin, @opencode/client, @opencode/schema, zod
 npm run typecheck  # typecheck da raiz (types do plugin resolvem do node_modules da raiz)
-npm test           # suite do plugin (bun test, plugins/memory/test)
+npm test           # suite do plugin memory (bun test, plugins/memory/test)
 ```
 
-O plugin também se desenvolve standalone no repo
-[opencode-memory](https://github.com/HitalloExiled/opencode-memory)
-(`npm install && npm run typecheck && npm test` lá); mudanças nele voltam
-para o opencode-tools via `git submodule update` (commit do submodule
-atualizado no repo pai).
+Os plugins também se desenvolvem standalone nos repos
+[opencode-memory](https://github.com/HitalloExiled/opencode-memory) e
+[opencode-notes](https://github.com/HitalloExiled/opencode-notes)
+(`npm install && npm run typecheck` lá); mudanças neles voltam para o
+opencode-tools via `git submodule update` (commit do submodule atualizado no
+repo pai). O `setup.sh` roda `npm install` dentro de cada plugin com
+`package.json`, então o clone fresco fica pronto sem passo manual.
 
 Smoke do CLI sem configurar a máquina:
 

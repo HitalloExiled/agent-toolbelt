@@ -109,10 +109,16 @@ ensure_memory_plugin() {
 }
 
 ensure_notes_plugin() {
-  # The notes tools moved from tools/notes.ts (old SDK, flat names) to a
-  # plugin (plugins/notes, new SDK): namespace "notes" -> tools.notes.* in
-  # Code Mode, notes_* effective names in regular sessions (the existing
-  # permission rules keep matching).
+  # The notes tools live in the opencode-notes repo, vendored here as a git
+  # submodule (plugins/notes). A fresh clone arrives without it.
+  if [ ! -f "$ROOT/plugins/notes/index.ts" ]; then
+    if git -C "$ROOT" submodule update --init plugins/notes >/dev/null 2>&1; then
+      say "  submodule: plugins/notes inicializado (opencode-notes)"
+    else
+      warn "submodule plugins/notes ausente e git submodule update falhou (offline?); o plugin nao vai carregar"
+      return 1
+    fi
+  fi
   link "$ROOT/plugins/notes" "$CONFIG_DIR/plugins/notes" || true
 }
 
