@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# setup.sh — deixa esta maquina (zerada ou nao) pronta para o agent-toolbelt.
+# setup.sh — deixa esta maquina (zerada ou nao) pronta para o opencode-tools.
 #
 # Nao instala pacotes: cria os links que expoem tools/skills ao OpenCode, garante
 # o banco de memoria, e prepara o sandbox (daemon docker, guard de firewall,
@@ -336,7 +336,7 @@ sandbox_smoke() {
 
 cmd_check() {
   local failed=0
-  say "agent-toolbelt — diagnostico"
+  say "opencode-tools — diagnostico"
   say "repo: $ROOT"
 
   step "dependencias"
@@ -421,7 +421,7 @@ cmd_check() {
 }
 
 cmd_remove() {
-  say "agent-toolbelt — removendo os links (dados preservados)"
+  say "opencode-tools — removendo os links (dados preservados)"
   unlink_ours "$BIN_DIR/notes"
   local d t
   for d in "$ROOT"/skills/*/; do
@@ -462,7 +462,7 @@ EOF
 }
 
 cmd_setup() {
-  say "agent-toolbelt — configurando"
+  say "opencode-tools — configurando"
   say "repo:   $ROOT"
   say "bin:    $BIN_DIR"
   say "config: $CONFIG_DIR"

@@ -29,7 +29,7 @@ function sbCommand(): string {
 }
 
 /**
- * The sandbox project's runs/ directory (agent-toolbelt/sandbox/runs),
+ * The sandbox project's runs/ directory (opencode-tools/sandbox/runs),
  * resolved through the CLI's realpath
  * (~/.local/bin/opencode-sb -> <repo>/sandbox/opencode-sandboxed). Null when
  * the CLI comes from PATH and is not a symlink.
@@ -82,7 +82,7 @@ function spawnCli(
         stderr:
           stderr +
           `\ncould not run '${sbCommand()}': ${err.message}\n` +
-          "install the sandbox (sandbox/ in the agent-toolbelt repo) or set $SANDBOX_BIN.",
+          "install the sandbox (sandbox/ in the opencode-tools repo) or set $SANDBOX_BIN.",
       }),
     );
     child.on("close", (code) => {
@@ -91,7 +91,7 @@ function spawnCli(
         code: timedOut ? 124 : code ?? -1,
         stdout,
         stderr: timedOut
-          ? stderr + `\n[agent-toolbelt] host budget exhausted (${timeoutMs} ms)`
+          ? stderr + `\n[opencode-tools] host budget exhausted (${timeoutMs} ms)`
           : stderr,
       });
     });

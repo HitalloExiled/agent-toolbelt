@@ -171,7 +171,7 @@ ls ~/.sandbox/run-*/image.iso   # human collects it
 ## Quick start
 
 ```bash
-cd /home/rafael.franca/Projetos/My/agent-toolbelt
+cd /home/rafael.franca/Projetos/My/opencode-tools
 ./setup.sh                       # links, daemon, firewall guard, images, smoke
 
 opencode-sb task \
