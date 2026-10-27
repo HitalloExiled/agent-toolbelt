@@ -331,7 +331,7 @@ condicional ("se existir na máquina"), mantendo cada plugin standalone.
 
 ```bash
 git submodule update --init plugins/memory   # se o clone veio sem o submodule
-npm install        # devDeps: typescript, @types/node, @opencode-ai/plugin, @opencode/plugin, @opencode/client, @opencode/schema
+npm install        # devDeps: typescript, @types/node, @opencode-ai/plugin, @opencode/plugin, @opencode/client, @opencode/schema, zod
 npm run typecheck  # typecheck da raiz (types do plugin resolvem do node_modules da raiz)
 npm test           # suite do plugin (bun test, plugins/memory/test)
 ```
