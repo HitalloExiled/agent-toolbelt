@@ -77,7 +77,7 @@ O que o `setup.sh` faz, em ordem:
 | memória | symlink `~/.local/bin/notes` → `memory/notes.py`; migra o banco legado, se existir |
 | skills | symlink `skills/<id>/SKILL.md` → `~/.config/opencode/skills/<id>/SKILL.md` |
 | tools | symlink `tools/*.ts` → `~/.config/opencode/tools/` |
-| plugins `memory` + `notes` | garante o submodule `plugins/memory` inicializado (clone de `opencode-memory`) + symlinks → `~/.config/opencode/plugins/{memory,notes}`; remove o link legado `tools/notes.ts` (as tools `notes_*` viraram o plugin `notes`) |
+| plugins `memory` + `notes` | garante o submodule `plugins/memory` inicializado (clone de `opencode-memory`) + symlinks → `~/.config/opencode/plugins/{memory,notes}` + `npm install` dentro de cada plugin com `package.json` (plugins sem `package.json`, como `notes`, resolvem do `node_modules` da raiz); remove o link legado `tools/notes.ts` (as tools `notes_*` viraram o plugin `notes`) |
 | sandbox | daemon docker → CLI `opencode-sb` → guard de firewall → imagens/rede → self-test → tarefa de fumaça |
 | verificação | `notes init`, `notes doctor`, estado do sandbox, PATH |
 

@@ -2,9 +2,9 @@
 #
 # setup.sh — deixa esta maquina (zerada ou nao) pronta para o opencode-tools.
 #
-# Nao instala pacotes: cria os links que expoem tools/skills ao OpenCode, garante
-# o banco de memoria, e prepara o sandbox (daemon docker, guard de firewall,
-# imagens e uma tarefa de fumaça).
+# Cria os links que expoem tools/skills ao OpenCode, instala as dependencias
+# npm dos plugins, garante o banco de memoria, e prepara o sandbox (daemon
+# docker, guard de firewall, imagens e uma tarefa de fumaça).
 #
 #   ./setup.sh                 configura tudo (inclui build + smoke do sandbox)
 #   ./setup.sh --check         so diagnostica, nao altera nada (exit 1 se faltar algo)
@@ -114,6 +114,25 @@ ensure_notes_plugin() {
   # Code Mode, notes_* effective names in regular sessions (the existing
   # permission rules keep matching).
   link "$ROOT/plugins/notes" "$CONFIG_DIR/plugins/notes" || true
+}
+
+install_plugin_deps() {
+  # A fresh clone (git submodule) arrives without node_modules: install the
+  # npm deps inside every plugin that declares its own package.json. Plugins
+  # without one (plugins/notes) resolve from the root node_modules instead.
+  local d
+  for d in "$ROOT"/plugins/*/; do
+    [ -f "$d/package.json" ] || continue
+    if [ -d "$d/node_modules" ]; then
+      say "  deps   : $(basename "$d") ja presente em node_modules/"
+      continue
+    fi
+    if command -v npm >/dev/null 2>&1 && (cd "$d" && npm install --no-audit --no-fund --silent) >/dev/null 2>&1; then
+      say "  deps   : $(basename "$d") instalado via npm"
+    else
+      warn "deps   : nao consegui instalar em $(basename "$d") (npm ausente/offline?) — o plugin pode nao carregar"
+    fi
+  done
 }
 
 unlink_ours() { # remove symlink apenas se apontar para dentro do repo
@@ -497,6 +516,7 @@ cmd_setup() {
   step "5/7 plugins (memory + notes)"
   ensure_memory_plugin
   ensure_notes_plugin
+  install_plugin_deps
 
   local sandbox_failed=0
   if [ "$SANDBOX" = 1 ]; then
