@@ -108,6 +108,14 @@ ensure_memory_plugin() {
   link "$ROOT/plugins/memory" "$CONFIG_DIR/plugins/memory" || true
 }
 
+ensure_notes_plugin() {
+  # The notes tools moved from tools/notes.ts (old SDK, flat names) to a
+  # plugin (plugins/notes, new SDK): namespace "notes" -> tools.notes.* in
+  # Code Mode, notes_* effective names in regular sessions (the existing
+  # permission rules keep matching).
+  link "$ROOT/plugins/notes" "$CONFIG_DIR/plugins/notes" || true
+}
+
 unlink_ours() { # remove symlink apenas se apontar para dentro do repo
   local dst="$1"
   [ -L "$dst" ] || return 0
@@ -363,14 +371,12 @@ cmd_check() {
   for f in "$CONFIG_DIR/skills/notes/SKILL.md" "$CONFIG_DIR/skills/sandbox/SKILL.md"; do
     if [ -e "$f" ]; then say "  skill   : $f"; else say "  skill   : (ausente) $f"; failed=1; fi
   done
-  for f in "$CONFIG_DIR/tools/notes.ts" "$CONFIG_DIR/tools/sandbox.ts"; do
+  for f in "$CONFIG_DIR/tools/sandbox.ts"; do
     if [ -e "$f" ]; then say "  tool    : $f"; else say "  tool    : (ausente) $f"; failed=1; fi
   done
-  if [ -e "$CONFIG_DIR/plugins/memory" ]; then
-    say "  plugin  : $CONFIG_DIR/plugins/memory"
-  else
-    say "  plugin  : (ausente) $CONFIG_DIR/plugins/memory"; failed=1
-  fi
+  for f in "$CONFIG_DIR/plugins/memory" "$CONFIG_DIR/plugins/notes"; do
+    if [ -e "$f" ]; then say "  plugin  : $f"; else say "  plugin  : (ausente) $f"; failed=1; fi
+  done
   say "  banco   : $NEW_DB"
 
   if [ "$SANDBOX" = 1 ]; then
@@ -426,11 +432,14 @@ cmd_remove() {
     [ -e "$t" ] || continue
     unlink_ours "$CONFIG_DIR/tools/$(basename "$t")"
   done
+  # notes.ts moved to plugins/notes; drop the legacy flat-tool link too.
+  unlink_ours "$CONFIG_DIR/tools/notes.ts"
   local name
   for name in opencode-sandboxed opencode-sb; do
     unlink_ours "$BIN_DIR/$name"
   done
   unlink_ours "$CONFIG_DIR/plugins/memory"
+  unlink_ours "$CONFIG_DIR/plugins/notes"
   unlink_ours "$CONFIG_DIR/plugins/toolbelt"   # nome antigo
   say ""
   say "banco preservado em: $NEW_DB"
@@ -482,9 +491,12 @@ cmd_setup() {
     [ -f "$t" ] || continue
     link "$t" "$CONFIG_DIR/tools/$(basename "$t")" || true
   done
+  # notes.ts moved to plugins/notes; drop the legacy flat-tool link if present.
+  unlink_ours "$CONFIG_DIR/tools/notes.ts"
 
-  step "5/7 plugin memory (resumos, busca, contexto)"
+  step "5/7 plugins (memory + notes)"
   ensure_memory_plugin
+  ensure_notes_plugin
 
   local sandbox_failed=0
   if [ "$SANDBOX" = 1 ]; then

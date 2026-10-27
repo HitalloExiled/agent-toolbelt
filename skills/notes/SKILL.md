@@ -1,6 +1,6 @@
 ---
 name: notes
-description: Curated, portable knowledge base in SQLite (FTS5) via global CLI `notes` and tools `notes_add`/`notes_update`/`notes_confirm`/`notes_dispute`/`notes_retract`/`notes_history`/`notes_restore`/`notes_view`/`notes_search`/`notes_doctor`. Stores distilled facts at any scope (global, project, machine) — decisions, resolved problems with symptom/cause/solution, configuration, snippets — with a trust lifecycle (`notes_confirm`/`notes_dispute` set the trust signal on a note; `notes_retract` hides noise without deleting) and full revision history; notes survive machines via export/import. `notes_update` is a last resort, only to fix a note now known to be wrong or conflicting, and keeps the previous version readable via `notes_history`/`notes_restore`. Use when a fact must stay true across sessions and machines, or before acting on a project with documented history. Not a conversation log: it holds distilled knowledge, not what was said in a session.
+description: Curated, portable knowledge base in SQLite (FTS5) via global CLI `notes` and tools `notes.add`/`notes.update`/`notes.confirm`/`notes.dispute`/`notes.retract`/`notes.history`/`notes.restore`/`notes.view`/`notes.search`/`notes.doctor` (effective names `notes_add`, `notes_search`, ... in regular sessions). Stores distilled facts at any scope (global, project, machine) — decisions, resolved problems with symptom/cause/solution, configuration, snippets — with a trust lifecycle (`notes.confirm`/`notes.dispute` set the trust signal on a note; `notes.retract` hides noise without deleting) and full revision history; notes survive machines via export/import. `notes.update` is a last resort, only to fix a note now known to be wrong or conflicting, and keeps the previous version readable via `notes.history`/`notes.restore`. Use when a fact must stay true across sessions and machines, or before acting on a project with documented history. Not a conversation log: it holds distilled knowledge, not what was said in a session.
 metadata:
   audience: any
   opencode/slash: "true"
@@ -26,16 +26,16 @@ Implementation and installation: repo **`agent-toolbelt`** (section `memory/`).
 
 | Tool | For |
 |---|---|
-| `notes_search` | search / list recent notes (without `query` = list). Disputed notes show ⚠ and sort last; retracted ones are hidden unless `includeRetracted` |
-| `notes_add` | record a new note (validates the `#problem` format) |
-| `notes_update` | **last resort**: fix a note that is wrong or conflicts (moves its timestamp, re-verifies it, snapshots the old version) |
-| `notes_confirm` | ✔ re-verified a note read as-is: it still holds (clears dispute/retraction) |
-| `notes_dispute` | ⚠ flag a note as suspect **without** rewriting it (needs `why`) |
-| `notes_retract` | 🚫 hide junk/obsolete noise from search/list (reversible, nothing is deleted) |
-| `notes_history` | read a note's current state + every earlier version (rev #N) |
-| `notes_restore` | bring back the content of an earlier rev #N (keeps the current one too) |
-| `notes_view` | show one note by id in full, whatever its state (retracted included, with 🚫) |
-| `notes_doctor` | diagnose memory/schema/FTS5 when something fails |
+| `notes.search` | search / list recent notes (without `query` = list). Disputed notes show ⚠ and sort last; retracted ones are hidden unless `includeRetracted` |
+| `notes.add` | record a new note (validates the `#problem` format) |
+| `notes.update` | **last resort**: fix a note that is wrong or conflicts (moves its timestamp, re-verifies it, snapshots the old version) |
+| `notes.confirm` | ✔ re-verified a note read as-is: it still holds (clears dispute/retraction) |
+| `notes.dispute` | ⚠ flag a note as suspect **without** rewriting it (needs `why`) |
+| `notes.retract` | 🚫 hide junk/obsolete noise from search/list (reversible, nothing is deleted) |
+| `notes.history` | read a note's current state + every earlier version (rev #N) |
+| `notes.restore` | bring back the content of an earlier rev #N (keeps the current one too) |
+| `notes.view` | show one note by id in full, whatever its state (retracted included, with 🚫) |
+| `notes.doctor` | diagnose memory/schema/FTS5 when something fails |
 
 Via terminal (or when tools are unavailable), the equivalent CLI:
 
@@ -60,13 +60,13 @@ notes doctor                      # diagnosis
 - **Resolving a non-trivial problem**: register symptom → cause → solution (section below). This is the most important rule of the skill.
 - **Making important decisions** (architecture, trade-offs, non-obvious configuration): record with category `#decision`.
 - **Generating reusable snippets/configurations**: `#snippet` / `#config`.
-- **Never delete or overwrite the memory database.** If the user asks to clear the history, direct them to run maintenance manually in their own terminal — do not do it yourself, and these are not CLI commands exposed here. `notes_update` edits one note in place and snapshots the previous version (recoverable via `notes_history`/`notes_restore`); it is not a wipe.
+- **Never delete or overwrite the memory database.** If the user asks to clear the history, direct them to run maintenance manually in their own terminal — do not do it yourself, and these are not CLI commands exposed here. `notes.update` edits one note in place and snapshots the previous version (recoverable via `notes.history`/`notes.restore`); it is not a wipe.
 
 ## Registering solved problems (mandatory)
 
 Whenever you solve a **non-trivial** problem — bug, configuration error, unexpected behavior, dependency failure, regression — record a `#problem` note **before closing the task**. The next session must not re-live the same problem: your note is the shortcut.
 
-**Required content: Symptom, Cause, Solution.** The `notes_add` tool **refuses** to record a `#problem` note that lacks the three sections.
+**Required content: Symptom, Cause, Solution.** The `notes.add` tool **refuses** to record a `#problem` note that lacks the three sections.
 
 ```
 Symptom: <what was observed / error message>
@@ -84,10 +84,10 @@ Rules:
 - **Before recording, search.** `notes search "<symptom>"`. If the same problem is already documented with the same solution, do not duplicate.
 - Multiple problems solved in one session = several notes, one per problem.
 
-## Correcting a note (`notes_update`) — last resort
+## Correcting a note (`notes.update`) — last resort
 
 A wrong note is worse than a missing one: the next agent trusts it. Use
-`notes_update` **only** when a saved note is now known to be factually wrong,
+`notes.update` **only** when a saved note is now known to be factually wrong,
 or when two notes contradict each other and one must be corrected.
 
 - **Only for conflicts/wrong facts.** New information, a changed decision,
@@ -96,7 +96,7 @@ or when two notes contradict each other and one must be corrected.
   stand with their dates.
 - **Correct, do not rewrite history.** Change only the fields that are wrong;
   leave the rest. The previous version is snapshotted automatically (read it
-  with `notes_history`, bring it back with `notes_restore`), but the point of
+  with `notes.history`, bring it back with `notes.restore`), but the point of
   `update` is to record a *correction*, not to "clean up" notes you disagree
   with — for suspicion without a fix, `dispute` is the right move.
 - **The timestamp moves to now.** After an update the note is stamped with the
@@ -141,10 +141,10 @@ A note carries a trust signal. Three operations set it, none of them deletes:
 
 | You want to… | Do | Effect |
 |---|---|---|
-| say "this still holds" after using it | `notes_confirm <id>` | ✔ verified now; clears dispute/retraction |
-| warn others it looks wrong, **no fix yet** | `notes_dispute <id> --why "…"` | ⚠ shown, sorted **last**, reason mandatory |
-| silence junk/obsolete/a test leftover | `notes_retract <id> [--why "…"]` | 🚫 hidden from search/list (reversible) |
-| fix what is actually wrong | `notes_update <id> --content "…"` | rewrites the note, re-verifies, clears flags |
+| say "this still holds" after using it | `notes.confirm <id>` | ✔ verified now; clears dispute/retraction |
+| warn others it looks wrong, **no fix yet** | `notes.dispute <id> --why "…"` | ⚠ shown, sorted **last**, reason mandatory |
+| silence junk/obsolete/a test leftover | `notes.retract <id> [--why "…"]` | 🚫 hidden from search/list (reversible) |
+| fix what is actually wrong | `notes.update <id> --content "…"` | rewrites the note, re-verifies, clears flags |
 
 Choosing the right one:
 
@@ -174,7 +174,7 @@ get `retract`. `update` stays reserved for genuine corrections.
 - **Scope**: how far the fact applies — `global` (machine-independent; the default, may be omitted), `project:<name>`, or `machine:<name>`. Scope is orthogonal to category and tags: it tells a reader on another machine *where* the fact applies, not whether it should have been registered at all.
 - **Tags**: keywords separated by space, without `#` (e.g.: `selinux module`).
 - **Title**: short and specific — for problems, describe the symptom (e.g. "sandbox TUI fails without exec on /tmp").
-- **Author**: who registered the note (`--author <name>` / `author` on `notes_add`). Agents pass their own name; humans registering from a terminal pass theirs. Set at creation, never changed by `update`; shown as `(by <author>)` in search/list/view.
+- **Author**: who registered the note (`--author <name>` / `author` on `notes.add`). Agents pass their own name; humans registering from a terminal pass theirs. Set at creation, never changed by `update`; shown as `(by <author>)` in search/list/view.
 - **Content**: the fact/decision + the why + relevant commands or paths. Write for someone who hasn't seen the conversation.
 
 ## Backup and transport

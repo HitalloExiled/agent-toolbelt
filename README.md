@@ -6,7 +6,8 @@ OpenCode.
 Três subsistemas:
 
 - **`notes`** — memória de longa duração (SQLite + FTS5 opcional), exposta como
-  CLI global `notes` e como as tools `notes_*`.
+  CLI global `notes` e como plugin `plugins/notes` (tools `notes.*` no Code
+  Mode; nomes efetivos `notes_*` em sessões regulares).
 - **`sandbox`** — delegação de trabalho com risco para um container Docker
   descartável, via as tools `sandbox_*` e o CLI `opencode-sb`.
 - **`memory` (plugin)** — captura resumos de compactação, injeta o
@@ -28,10 +29,10 @@ agent-toolbelt/
 │   ├── schema_fts.sql  # camada FTS5 (opcional)
 │   └── migrations/     # NNN_*.sql para v2+
 ├── tools/
-│   ├── notes.ts
 │   └── sandbox.ts
 ├── plugins/
-│   └── memory/          # plugin OpenCode V2 (SUBMODULE → opencode-memory): resumos, injeção, busca
+│   ├── memory/          # plugin OpenCode V2 (SUBMODULE → opencode-memory): resumos, injeção, busca
+│   └── notes/           # plugin OpenCode V2: tools notes.* sobre o CLI `notes`
 ├── sandbox/
 │   ├── setup.sh        # expõe opencode-sb/opencode-sandboxed no PATH
 │   ├── run.sh          # orquestrador (task/steer/watch/peek/status/up/down/…)
@@ -72,11 +73,11 @@ O que o `setup.sh` faz, em ordem:
 
 | Passo | Efeito |
 |---|---|
-| plugin (`@opencode-ai/plugin`) | garante a dependência npm resolvível a partir do repo (npm, ou symlink do config do OpenCode) — usada pelas tools legadas `notes_*`/`sandbox_*` |
+| plugin (`@opencode-ai/plugin`) | garante a dependência npm resolvível a partir do repo (npm, ou symlink do config do OpenCode) — usada pela tool legada `sandbox_*` |
 | memória | symlink `~/.local/bin/notes` → `memory/notes.py`; migra o banco legado, se existir |
 | skills | symlink `skills/<id>/SKILL.md` → `~/.config/opencode/skills/<id>/SKILL.md` |
 | tools | symlink `tools/*.ts` → `~/.config/opencode/tools/` |
-| plugin `memory` | garante o submodule `plugins/memory` inicializado (clone de `opencode-memory`) + symlink → `~/.config/opencode/plugins/memory` |
+| plugins `memory` + `notes` | garante o submodule `plugins/memory` inicializado (clone de `opencode-memory`) + symlinks → `~/.config/opencode/plugins/{memory,notes}`; remove o link legado `tools/notes.ts` (as tools `notes_*` viraram o plugin `notes`) |
 | sandbox | daemon docker → CLI `opencode-sb` → guard de firewall → imagens/rede → self-test → tarefa de fumaça |
 | verificação | `notes init`, `notes doctor`, estado do sandbox, PATH |
 
@@ -123,7 +124,7 @@ O repositório expõe duas camadas complementares, **isoladas por design**
 
 | Camada | Papel | Onde vive |
 |---|---|---|
-| **notes** (CLI + tools `notes_*`) | conhecimento **curado e portável**: fatos, decisões, problemas resolvidos, configs — com ciclo de confiança e histórico de versões; **via entre máquinas** (export/import) | `memory/notes.py` + `notes.db` |
+| **notes** (CLI + plugin `notes.*`) | conhecimento **curado e portável**: fatos, decisões, problemas resolvidos, configs — com ciclo de confiança e histórico de versões; **via entre máquinas** (export/import) | `memory/notes.py` + `notes.db` + `plugins/notes/` |
 | **memory** (plugin) | **retrieval local** de conversas e compactações: índice derivado (FTS5 + busca semântica local), injeção de contexto e handoff; descartável e por projeto | `plugins/memory/` + `index.db`/`compactions/` |
 
 Regra prática: "o que foi **dito/feito** na conversa X?" → `memory.search`;
@@ -139,7 +140,7 @@ O contrato completo de cada subsistema está nas skills (`skills/notes` e
 |---|---|
 | `notes add/update/confirm/dispute/retract/history/restore/view/search/list/doctor` | memória (detalhes em `skills/notes/SKILL.md`) |
 | `opencode-sb task/steer/peek/logs/status/…` | sandbox (detalhes em `skills/sandbox/SKILL.md`) |
-| `notes_*` | tools tipadas sobre o CLI; `notes_add` **recusa** `#problem` sem Sintoma/Causa/Solução e aceita `author` (quem registrou a nota, exibido como `(by <author>)`) |
+| `notes.*` (plugin; `notes_*` em sessões regulares) | tools tipadas sobre o CLI; `notes.add` **recusa** `#problem` sem Sintoma/Causa/Solução e aceita `author` (quem registrou a nota, exibido como `(by <author>)`) |
 | `sandbox_run/steer/peek/logs/status` | tools tipadas sobre o CLI; execução por `argv`, sem shell |
 
 O canal de retorno do sandbox é a **resposta final** (texto). `/workspace/out` é
@@ -297,6 +298,35 @@ reinicie o OpenCode. O `--remove` só desvincula os symlinks do repo — o
 submodule `plugins/memory` é parte do agent-toolbelt e permanece (use
 `git submodule deinit plugins/memory` para removê-lo do working tree).
 
+## Plugin: notes
+
+Plugin (`plugins/notes/`, id `notes`; vive neste repo, não é submodule) que
+expõe as operações do CLI `notes` como tools tipadas no namespace `notes`,
+no mesmo padrão do plugin `memory` (`memory.*` / `notes.*`):
+
+- **Code Mode:** `tools.notes.add`, `tools.notes.search`, `tools.notes.confirm`,
+  ... (10 tools) — o agente enxerga o grupo `notes` no catálogo e chama
+  direto, sem sondar nomes nem cair no CLI.
+- **Sessões regulares:** nomes efetivos `notes_add`, `notes_search`, ...
+  (mesmos de antes do refactor) — as regras de permissão existentes
+  (`resource: "notes_add"` etc. no `opencode.jsonc`) continuam valendo.
+
+Mecânica: `Plugin.define` + `ctx.tool.transform` com `editor.namespace({name:
+"notes"})` (só rotula o grupo no catálogo) e, por tool,
+`options: { namespace: "notes" }` (é isto que prefixa o nome qualificado no
+Code Mode). Os schemas de entrada são zod (o `input` do SDK aceita
+StandardSchemaV1); cada tool retorna `{content, metadata}`.
+
+As tools são um wrapper fino sobre o CLI `notes` (`memory/notes.py`):
+execução por `argv` (sem shell — o conteúdo da nota nunca é interpretado),
+validação do formato `#problem` (Sintoma/Causa/Solução obrigatórios) e nenhum
+comando destrutivo — `retract` esconde, `restore` recupera versões; nada é
+apagado.
+
+Isolamento por camadas: o plugin `notes` não conhece a camada `memory` (e
+vice-versa); o `/recall` do `memory` menciona o CLI `notes` apenas de forma
+condicional ("se existir na máquina"), mantendo cada plugin standalone.
+
 ## Desenvolvimento
 
 ```bash
@@ -327,7 +357,11 @@ Teste do `setup.sh` sem tocar na máquina:
 
 ## Adicionando um componente
 
-1. Tool: crie `tools/<nome>.ts` exportando `tool({...})`; export nomeado vira
-   `<nome>_<export>`. Rode `npm run typecheck`.
+1. Tool: crie `tools/<nome>.ts` exportando `tool({...})` (SDK antigo
+   `@opencode-ai/plugin`; export nomeado vira `<nome>_<export>`) — ou, para
+   ferramentas com namespace, um plugin `plugins/<ns>/` com `Plugin.define`
+   (SDK novo `@opencode/plugin`) e `options: { namespace: "<ns>" }` por tool
+   (fica `tools.<ns>.*` no Code Mode e `<ns>_<tool>` em sessões regulares).
+   Rode `npm run typecheck`.
 2. Skill: crie `skills/<id>/SKILL.md` com frontmatter `name`/`description`.
 3. `./setup.sh` já linka tudo que estiver nessas pastas.
