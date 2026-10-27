@@ -260,8 +260,11 @@ indicando a camada que o achou: `fts` (só palavras-chave), `vec`
 
 `/summaries`, `/summary [id] [brief|full|sections]`, `/sessions`, `/index`
 (força reindex do projeto), `/index-all` (indexa todos os projetos;
-`/index-all rebuild` para rebuild completo) e `/repo` (mostra só o estado do
-git). Cada um é um atalho que chama as tools acima.
+`/index-all rebuild` para rebuild completo), `/repo` (mostra só o estado do
+git) e `/recall <algo>` (busca forçada nas superfícies de memória: notas via
+CLI `notes`, se existir na máquina, + índice de conversas; cada hit com sua
+fonte — nota #N ou sessão + timestamp). Cada um é um atalho que chama as
+tools acima.
 
 ### Variáveis de ambiente
 
