@@ -109,8 +109,9 @@ ensure_memory_plugin() {
 }
 
 ensure_notes_plugin() {
-  # The notes tools live in the opencode-notes repo, vendored here as a git
-  # submodule (plugins/notes). A fresh clone arrives without it.
+  # The notes tools and the notes skill live in the opencode-notes repo,
+  # vendored here as a git submodule (plugins/notes). A fresh clone arrives
+  # without it.
   if [ ! -f "$ROOT/plugins/notes/index.ts" ]; then
     if git -C "$ROOT" submodule update --init plugins/notes >/dev/null 2>&1; then
       say "  submodule: plugins/notes inicializado (opencode-notes)"
@@ -120,12 +121,14 @@ ensure_notes_plugin() {
     fi
   fi
   link "$ROOT/plugins/notes" "$CONFIG_DIR/plugins/notes" || true
+  # The notes skill moved out of skills/ (it documents the notes layer and
+  # lives with the plugin); expose it from the submodule.
+  link "$ROOT/plugins/notes/skills/notes/SKILL.md" "$CONFIG_DIR/skills/notes/SKILL.md" || true
 }
 
 install_plugin_deps() {
   # A fresh clone (git submodule) arrives without node_modules: install the
-  # npm deps inside every plugin that declares its own package.json. Plugins
-  # without one (plugins/notes) resolve from the root node_modules instead.
+  # npm deps inside every plugin that declares its own package.json.
   local d
   for d in "$ROOT"/plugins/*/; do
     [ -f "$d/package.json" ] || continue
@@ -453,6 +456,8 @@ cmd_remove() {
     [ -d "$d" ] || continue
     unlink_ours "$CONFIG_DIR/skills/$(basename "$d")/SKILL.md"
   done
+  # The notes skill lives in the opencode-notes submodule.
+  unlink_ours "$CONFIG_DIR/skills/notes/SKILL.md"
   for t in "$ROOT"/tools/*.ts; do
     [ -e "$t" ] || continue
     unlink_ours "$CONFIG_DIR/tools/$(basename "$t")"

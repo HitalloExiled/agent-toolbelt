@@ -32,7 +32,7 @@ opencode-tools/
 │   └── sandbox.ts
 ├── plugins/
 │   ├── memory/          # plugin OpenCode V2 (SUBMODULE → opencode-memory): resumos, injeção, busca
-│   └── notes/           # plugin OpenCode V2: tools notes.* sobre o CLI `notes`
+│   └── notes/           # plugin OpenCode V2 + skill notes (SUBMODULE → opencode-notes): tools notes.* sobre o CLI `notes`
 ├── sandbox/
 │   ├── setup.sh        # expõe opencode-sb/opencode-sandboxed no PATH
 │   ├── run.sh          # orquestrador (task/steer/watch/peek/status/up/down/…)
@@ -42,8 +42,7 @@ opencode-tools/
 │   ├── models.conf         # listas de preferência de modelo
 │   └── README.md
 └── skills/
-    ├── notes/SKILL.md
-    └── sandbox/SKILL.md
+    └── sandbox/SKILL.md   # (a skill notes mora no submodule plugins/notes)
 ```
 
 ## Setup
@@ -77,7 +76,7 @@ O que o `setup.sh` faz, em ordem:
 |---|---|
 | plugin (`@opencode-ai/plugin`) | garante a dependência npm resolvível a partir do repo (npm, ou symlink do config do OpenCode) — usada pela tool legada `sandbox_*` |
 | memória | symlink `~/.local/bin/notes` → `memory/notes.py`; migra o banco legado, se existir |
-| skills | symlink `skills/<id>/SKILL.md` → `~/.config/opencode/skills/<id>/SKILL.md` |
+| skills | symlink `skills/<id>/SKILL.md` → `~/.config/opencode/skills/<id>/SKILL.md` (o skill `notes` vem do submodule `plugins/notes/skills/notes` e é linkado na etapa de plugins) |
 | tools | symlink `tools/*.ts` → `~/.config/opencode/tools/` |
 | plugins `memory` + `notes` | garante os submodules `plugins/memory` e `plugins/notes` inicializados (clones de `opencode-memory` e `opencode-notes`) + symlinks → `~/.config/opencode/plugins/{memory,notes}` + `npm install` dentro de cada plugin com `package.json`; remove o link legado `tools/notes.ts` (as tools `notes_*` viraram o plugin `notes`) |
 | sandbox | daemon docker → CLI `opencode-sb` → guard de firewall → imagens/rede → self-test → tarefa de fumaça |
@@ -138,12 +137,13 @@ valer em outra máquina precisa ser nota.
 
 ## CLI e tools
 
-O contrato completo de cada subsistema está nas skills (`skills/notes` e
-`skills/sandbox`); aqui vai só o mapa.
+O contrato completo de cada subsistema está nas skills (`plugins/notes/skills/notes`
+e `skills/sandbox`, expostas via symlinks em `~/.config/opencode/skills/`);
+aqui vai só o mapa.
 
 | Origem | O que oferece |
 |---|---|
-| `notes add/update/confirm/dispute/retract/history/restore/view/search/list/doctor` | memória (detalhes em `skills/notes/SKILL.md`) |
+| `notes add/update/confirm/dispute/retract/history/restore/view/search/list/doctor` | memória (detalhes no skill `notes`, `plugins/notes/skills/notes/SKILL.md`) |
 | `opencode-sb task/steer/peek/logs/status/…` | sandbox (detalhes em `skills/sandbox/SKILL.md`) |
 | `notes.*` (plugin; `notes_*` em sessões regulares) | tools tipadas sobre o CLI; `notes.add` **recusa** `#problem` sem Sintoma/Causa/Solução e aceita `author` (quem registrou a nota, exibido como `(by <author>)`) |
 | `sandbox_run/steer/peek/logs/status` | tools tipadas sobre o CLI; execução por `argv`, sem shell |
@@ -329,7 +329,11 @@ submodule `plugins/memory` é parte do opencode-tools e permanece (use
 Plugin (`plugins/notes/`, id `notes`; vendored como **git submodule** do repo
 [opencode-notes](https://github.com/HitalloExiled/opencode-notes)) que expõe
 as operações do CLI `notes` como tools tipadas no namespace `notes`,
-no mesmo padrão do plugin `memory` (`memory.*` / `notes.*`):
+no mesmo padrão do plugin `memory` (`memory.*` / `notes.*`). O repo
+`opencode-notes` também traz o **skill `notes`** (`skills/notes/SKILL.md` —
+o contrato de uso da camada para os agentes), exposto por este repo via
+symlink `~/.config/opencode/skills/notes/SKILL.md` (feito pelo `setup.sh` na
+etapa de plugins):
 
 - **Code Mode:** `tools.notes.add`, `tools.notes.search`, `tools.notes.confirm`,
   ... (10 tools) — o agente enxerga o grupo `notes` no catálogo e chama
