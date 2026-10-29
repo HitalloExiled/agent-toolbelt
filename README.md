@@ -79,7 +79,7 @@ O que o `setup.sh` faz, em ordem:
 | memória | symlink `~/.local/bin/notes` → `memory/notes.py`; migra o banco legado, se existir |
 | skills | symlink `skills/<id>/SKILL.md` → `~/.config/opencode/skills/<id>/SKILL.md` |
 | tools | symlink `tools/*.ts` → `~/.config/opencode/tools/` |
-| plugins `memory` + `notes` | garante o submodule `plugins/memory` inicializado (clone de `opencode-memory`) + symlinks → `~/.config/opencode/plugins/{memory,notes}` + `npm install` dentro de cada plugin com `package.json` (plugins sem `package.json`, como `notes`, resolvem do `node_modules` da raiz); remove o link legado `tools/notes.ts` (as tools `notes_*` viraram o plugin `notes`) |
+| plugins `memory` + `notes` | garante os submodules `plugins/memory` e `plugins/notes` inicializados (clones de `opencode-memory` e `opencode-notes`) + symlinks → `~/.config/opencode/plugins/{memory,notes}` + `npm install` dentro de cada plugin com `package.json`; remove o link legado `tools/notes.ts` (as tools `notes_*` viraram o plugin `notes`) |
 | sandbox | daemon docker → CLI `opencode-sb` → guard de firewall → imagens/rede → self-test → tarefa de fumaça |
 | verificação | `notes init`, `notes doctor`, estado do sandbox, PATH |
 
@@ -128,10 +128,13 @@ O repositório expõe duas camadas complementares, **isoladas por design**
 |---|---|---|
 | **notes** (CLI + plugin `notes.*`) | conhecimento **curado e portável**: fatos, decisões, problemas resolvidos, configs — com ciclo de confiança e histórico de versões; **via entre máquinas** (export/import) | `memory/notes.py` + `notes.db` + `plugins/notes/` |
 | **memory** (plugin) | **retrieval local** de conversas e compactações: índice derivado (FTS5 + busca semântica local), injeção de contexto e handoff; descartável e por projeto | `plugins/memory/` + `index.db`/`compactions/` |
+| **memória persistente** (camada do plugin memory) | fatos duráveis do **mundo/usuário** que continuam verdadeiros após a sessão: quem é o usuário, preferências, trabalho em curso, fatos da máquina — injetada **no início de toda sessão** (com quota), escrita explícita do agente (`memory.profile`) ou do usuário (`/remember`/`/forget`); por máquina, sem portabilidade | `plugins/memory/` + `profile.json` |
 
 Regra prática: "o que foi **dito/feito** na conversa X?" → `memory.search`;
-"o que **sabemos com confiança** sobre X?" → `notes`. O que precisa valer
-em outra máquina precisa ser nota.
+"o que **sabemos com confiança** sobre X?" → `notes`; "quem é o usuário /
+como esta máquina se comporta / no que estamos trabalhando?" → memória
+persistente (injetada, um `memory.profile get` de distância). O que precisa
+valer em outra máquina precisa ser nota.
 
 ## CLI e tools
 
@@ -177,16 +180,21 @@ Carregado automaticamente como pacote local em `~/.config/opencode/plugins/memor
    `<memory-context>` com: repositório, branch e último commit (o status do
    working tree fica **fora** do bloco, para não invalidar o cache de prefixo
    do servidor a cada edição — peça o estado atual sob demanda pela ferramenta
-   `memory.summaries` com `action=repo`), **notas relevantes** da memória de
-   longa duração (lidas de `notes.db`, quando existir na máquina — as cujas
-   `Scope:` nomeiam o projeto da sessão ou esta máquina, nunca re-traídas,
-   mais recentes primeiro) e o handoff da sessão anterior do mesmo projeto —
+   `memory.summaries` com `action=repo`), a **memória persistente** (fatos
+   duráveis do mundo/usuário em `profile.json` — quem é o usuário,
+   preferências, trabalho em curso, fatos da máquina; fatos `machine` +
+   fatos do projeto da sessão, mais recentes primeiro, com quota de
+   `MEMORY_PROFILE_MAX` chars e teto de `MEMORY_PROFILE_INJECT` fatos; loja
+   vazia → sem seção) e o handoff da sessão anterior do mesmo projeto —
    apenas as seções Objective/Next Move, marcadas como *dados não confiáveis*
    (o corpo completo do resumo nunca entra no system prompt; use
-   `memory.summaries` para ler). Junto ao bloco, o plugin injeta também uma
-   pequena regra de *memory routing* — orientativa e **aditiva** (nunca
-   substitui as instruções originais): consulte a memória antes de agir no
-   mundo quando a pergunta já pode estar respondida nela. Isso nunca é
+   `memory.summaries` para ler). A memória persistente é **raw e
+   determinística**: o texto injetado é 1:1 com a loja, sem passo de modelo
+   no caminho de injeção — os fatos são mastigados no write. Junto ao bloco,
+   o plugin injeta também uma pequena regra de *memory routing* — orientativa
+   e **aditiva** (nunca substitui as instruções originais): consulte a
+   memória antes de agir no mundo quando a pergunta já pode estar respondida
+   nela, e persista fatos duráveis novos via `memory.profile`. Isso nunca é
    persistido — é recalculado a cada injeção.
 3. **Permite busca cross-sessão.** Um índice derivado (SQLite FTS5, com
    fallback `LIKE` e, por último, JSON) guarda apenas texto de usuário, texto
@@ -212,6 +220,7 @@ Carregado automaticamente como pacote local em `~/.config/opencode/plugins/memor
 $XDG_DATA_HOME/opencode/memory/
 ├── compactions/<projectID>/<timestampUTC>-<messageID>.md   # resumos, um por compactação
 ├── index.db          # índice FTS5 derivado + tabela `embeddings` (ou index.json sem SQLite)
+├── profile.json      # memória persistente: fatos duráveis do mundo/usuário
 └── embed-models/<model>/   # pesos dos modelos de embedding locais (baixados uma vez, com checagem de tamanho)
 ```
 
@@ -257,13 +266,14 @@ indicando a camada que o achou: `fts` (só palavras-chave), `vec`
   pesos incompletos, `MEMORY_EMBED_DISABLED=1`), a busca volta a ser só por
   palavras-chave e o resultado informa isso.
 
-### Tools (read-only, com escopo de projeto por padrão)
+### Tools (read-only, exceto `memory.profile`; escopo de projeto por padrão)
 
 | Tool | Para quê |
 |---|---|
 | `memory.summaries` | listar/buscar/ler resumos de compactação (`detail=brief\|full\|sections`) + estado do repo (`action=repo`) |
 | `memory.search` | busca híbrida (FTS5 + semântica local, fundida por RRF; cada hit tagueado `via: fts\|vec\|fts+vec` **e com atribuição** `by: <agente> (<modelo>)` / `by: user`) no índice derivado (resumos + texto de usuário/assistente); `scope=project\|all`; `action=index-all` indexa todos os projetos manualmente (`rebuild=true` para rebuild completo); `action=embed` (re)constrói os vetores do escopo |
 | `memory.history` | inspecionar a timeline completa de uma sessão (listar sessões, ler página, buscar, buscar uma mensagem; mensagens de assistente mostram `agent:` e `model:`); tool calls e reasoning só entram com `includeTools`/`includeReasoning` explícitos; sessões de outro projeto exigem `scope=all` |
+| `memory.profile` | **memória persistente** (a única com escrita): `get` lista os fatos (machine + projeto atual; `all=true` para tudo), `set {value, scope?, id?}` persiste um fato verbatim (≤500 chars; com `id`, atualiza in-place) e `remove {id}` apaga. Scope: `machine` (padrão), `project` (projeto atual) ou `project:<name>`. Fatos têm ids estáveis e são injetados no início de toda sessão |
 
 ### Comandos
 
@@ -275,6 +285,12 @@ CLI `notes`, se existir na máquina, + índice de conversas; cada hit com sua
 fonte — nota #N ou sessão + timestamp). Cada um é um atalho que chama as
 tools acima.
 
+**Memória persistente** (escrita explícita do usuário): `/remember <fato>`
+persiste o fato verbatim (scope opcional `machine:`, `project:` ou
+`project:<name>`, padrão `machine`; deduplica via update in-place) e
+`/forget <texto ou id>` remove o fato correspondente (ambíguo → lista com ids
+para escolher).
+
 ### Variáveis de ambiente
 
 | Variável | Efeito | Default |
@@ -282,7 +298,8 @@ tools acima.
 | `MEMORY_DATA_DIR` | raiz de dados do plugin (sobrepõe XDG) | `$XDG_DATA_HOME/opencode/memory` |
 | `MEMORY_SUMMARY_KEEP` | quantos resumos manter por projeto (os mais antigos são podados, do disco e do índice, quando um novo resumo é capturado — nunca na path de leitura) | `20` |
 | `MEMORY_INJECT_MAX` | teto de bytes do bloco `<memory-context>` injetado | `~6 KB` |
-| `MEMORY_NOTES_INJECT` | quantas notas relevantes injetar no `<memory-context>` (`0` desliga a seção de notas) | `3` |
+| `MEMORY_PROFILE_INJECT` | quantos fatos da memória persistente injetar no `<memory-context>` (`0` desliga a seção) | `12` |
+| `MEMORY_PROFILE_MAX` | quota de chars da seção de memória persistente | `3000` |
 | `MEMORY_INDEX_TEXT_MAX` | teto de caracteres de texto indexado por documento | — |
 | `MEMORY_BACKFILL_SESSIONS` | teto de sessões processadas por backfill | — |
 | `MEMORY_BACKFILL_MESSAGES` | teto de mensagens processadas por sessão no backfill | — |
