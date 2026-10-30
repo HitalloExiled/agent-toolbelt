@@ -1,5 +1,5 @@
 ---
-name: sandbox
+name: Sandbox
 description: Disposable Docker sandbox that runs a separate OpenCode agent for risky work. It executes a brief you have already planned; it does not make the plan. Use ALWAYS before anything that could damage or expose this machine, such as installing or upgrading packages, touching services, kernel, /etc, disks or permissions, running untrusted code or dependencies, destructive or uncertain commands, processing potentially malicious files, or consulting dubious internet sources. The sandbox cannot see host files (input only via copy_in), its internet is logged or cut with sealed, and /workspace/out is the user's artifact drop, never a channel back to you. Drive it with sandbox_run/sandbox_steer/sandbox_peek/sandbox_logs/sandbox_status or the opencode-sb CLI. When a run is already in progress, steer it with sandbox_steer instead of starting another run. Skip for quick read-only questions you answer locally.
 metadata:
   audience: any
